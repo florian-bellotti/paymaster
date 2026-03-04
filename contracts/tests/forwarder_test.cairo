@@ -152,3 +152,75 @@ mod ExecuteSponsored {
         forwarder.execute_sponsored(account_address, entrypoint, calldata, sponsor_metadata);
     }
 }
+
+mod ExecuteSponsoredCalls {
+    use starknet::account::Call;
+    use super::{
+        IForwarderDispatcherTrait, IOwnableDispatcherTrait, IWhitelistDispatcherTrait, contract_address_const, deploy_forwarder,
+        deploy_mock_account, set_contract_address,
+    };
+
+    #[test]
+    #[available_gas(2000000000)]
+    fn should_execute_single_call() {
+        // Given
+        let (forwarder, ownable, whitelist) = deploy_forwarder();
+        let caller = contract_address_const::<0x999>();
+        let sponsor_metadata: Array<felt252> = array!['SPONSOR_ID'];
+        set_contract_address(ownable.get_owner());
+        whitelist.set_whitelisted_address(caller, true);
+        let account = deploy_mock_account();
+        // name() selector
+        let entrypoint: felt252 = 0x361458367e696363fbcc70777d07ebbd2394e89fd0adcaf147faccd1d294d60;
+        let calls: Array<Call> = array![
+            Call { to: account.contract_address, selector: entrypoint, calldata: array![].span() },
+        ];
+        set_contract_address(caller);
+
+        // When
+        let result = forwarder.execute_sponsored_calls(calls, sponsor_metadata);
+
+        // Then
+        assert(result == true, 'invalid result');
+    }
+
+    #[test]
+    #[available_gas(2000000000)]
+    fn should_execute_multiple_calls() {
+        // Given
+        let (forwarder, ownable, whitelist) = deploy_forwarder();
+        let caller = contract_address_const::<0x999>();
+        let sponsor_metadata: Array<felt252> = array!['SPONSOR_ID'];
+        set_contract_address(ownable.get_owner());
+        whitelist.set_whitelisted_address(caller, true);
+        let account = deploy_mock_account();
+        let entrypoint: felt252 = 0x361458367e696363fbcc70777d07ebbd2394e89fd0adcaf147faccd1d294d60;
+        let calls: Array<Call> = array![
+            Call { to: account.contract_address, selector: entrypoint, calldata: array![].span() },
+            Call { to: account.contract_address, selector: entrypoint, calldata: array![].span() },
+        ];
+        set_contract_address(caller);
+
+        // When
+        let result = forwarder.execute_sponsored_calls(calls, sponsor_metadata);
+
+        // Then
+        assert(result == true, 'invalid result');
+    }
+
+    #[test]
+    #[available_gas(2000000)]
+    #[should_panic(expected: ('Caller is not whitelisted', 'ENTRYPOINT_FAILED'))]
+    fn should_fail_when_caller_is_not_whitelisted() {
+        // Given
+        let (forwarder, _, _) = deploy_forwarder();
+        let sponsor_metadata: Array<felt252> = array!['SPONSOR_ID'];
+        let calls: Array<Call> = array![
+            Call { to: contract_address_const::<0x1>(), selector: 0x0, calldata: array![].span() },
+        ];
+        set_contract_address(contract_address_const::<0x1234>());
+
+        // When & Then
+        forwarder.execute_sponsored_calls(calls, sponsor_metadata);
+    }
+}

@@ -2,10 +2,11 @@
 
 This directory contains contracts that are used to provide the paymaster service.
 
-It declares a simple Forwarder contract. This one exposes two entrypoints:
+It declares a simple Forwarder contract. This one exposes three entrypoints:
 
 - `execute`: It verifies if the caller is whitelisted (only whitelisted relayers can execute user's calls), executes user's calls and collect user's gas tokens
 - `execute_sponsored`: It does the same as `execute` but it doesn't collect user's gas tokens
+- `execute_sponsored_calls`: It executes a list of calls with sponsor metadata, used for privacy transactions where the wallet builds multiple calls (e.g., approve + apply_actions)
 
 Here is the interface of the Forwarder contract:
 
@@ -32,8 +33,8 @@ trait IForwarder<TContractState> {
     fn execute_sponsored_calls(
         ref self: TContractState,
         calls: Array<Call>,
-        sponsor_metadata: Span<felt252>,
-    ) -> Array<Span<felt252>>;
+        sponsor_metadata: Array<felt252>,
+    ) -> bool;
 }
 ```
 
