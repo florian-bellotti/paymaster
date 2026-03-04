@@ -274,7 +274,7 @@ pub struct EstimatedExecutableTransaction(EstimatedCalls);
 
 impl EstimatedExecutableTransaction {
     pub async fn execute(self, client: &Client) -> Result<InvokeTransactionResult, Error> {
-        let result = client.execute(&self.0).await?;
+        let result = client.execute(&self.0, None).await?;
 
         Ok(result)
     }

@@ -29,6 +29,11 @@ trait IForwarder<TContractState> {
         calldata: Array<felt252>,
         sponsor_metadata: Array<felt252>,
     ) -> bool;
+    fn execute_sponsored_calls(
+        ref self: TContractState,
+        calls: Array<Call>,
+        sponsor_metadata: Span<felt252>,
+    ) -> Array<Span<felt252>>;
 }
 ```
 
