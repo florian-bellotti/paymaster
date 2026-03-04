@@ -38,7 +38,7 @@ serde = "1.0.219"
 serde_json = "1.0.139"
 serde_with = "3.14.0"
 simple_logger = "5.0.0"
-starknet = { package = "starknet-rust", git = "https://github.com/software-mansion/starknet-rust", tag = "0.19.0-rc.0" }
+starknet = { package = "starknet-rust", path = "/Users/florianbellotti/Documents/test/starknet-rust" }
 testcontainers = "0.23.3"
 thiserror = "2.0.11"
 tokio = "1.43.0"
