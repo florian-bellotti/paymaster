@@ -1,5 +1,5 @@
 use paymaster_prices::math::convert_strk_to_token;
-use paymaster_starknet::transaction::{CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, SequentialCalldataDecoder, TokenTransfer};
+use paymaster_starknet::transaction::{CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder, TokenTransfer};
 use paymaster_starknet::Signature;
 use starknet::core::types::{Call, Felt, InvokeTransactionResult, TypedData};
 use starknet::macros::selector;
@@ -24,6 +24,9 @@ pub enum ExecutableTransactionParameters {
     DirectInvoke {
         invoke: ExecutableDirectInvokeParameters,
     },
+    PrivateInvoke {
+        private_invoke: ExecutablePrivateInvokeParameters,
+    },
 }
 
 impl ExecutableTransactionParameters {
@@ -33,6 +36,14 @@ impl ExecutableTransactionParameters {
             ExecutableTransactionParameters::Invoke { invoke } => invoke.get_unique_identifier(),
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => invoke.get_unique_identifier(),
             ExecutableTransactionParameters::DirectInvoke { invoke } => invoke.get_unique_indentifier(),
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => private_invoke.get_unique_identifier(),
+        }
+    }
+
+    pub fn extract_proof_data(&self) -> Option<PrivateProofData> {
+        match self {
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => Some(private_invoke.proof_data.clone()),
+            _ => None,
         }
     }
 }
@@ -85,6 +96,30 @@ impl ExecutableInvokeParameters {
 pub struct ExecutableDirectInvokeParameters {
     pub user: Felt,
     pub execute_from_outside_call: Call,
+}
+
+#[derive(Debug)]
+pub struct ExecutablePrivateInvokeParameters {
+    pub user_address: Option<Felt>,
+    pub execute_from_outside_call: Option<Call>,
+    pub calls: Vec<Call>,
+    pub proof_data: PrivateProofData,
+}
+
+impl Hash for ExecutablePrivateInvokeParameters {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.calls.hash(state);
+        self.proof_data.hash(state);
+    }
+}
+
+impl ExecutablePrivateInvokeParameters {
+    pub fn get_unique_identifier(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.calls.hash(&mut hasher);
+        self.proof_data.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 impl ExecutableDirectInvokeParameters {
@@ -144,14 +179,28 @@ pub struct ExecutableTransaction {
 
     /// Execution parameters which should come out from the response of the [`buildTransaction`] endpoint
     pub parameters: ExecutionParameters,
+
+    /// Optional proof data for privacy transactions
+    pub proof_data: Option<PrivateProofData>,
 }
 
 impl ExecutableTransaction {
     /// Estimate a sponsored transaction which is a transaction that will be paid by the relayer
     pub async fn estimate_sponsored_transaction(self, client: &Client, sponsor_metadata: Vec<Felt>) -> Result<EstimatedExecutableTransaction, Error> {
-        let calls = self.build_sponsored_calls(sponsor_metadata);
+        let proof_data = self.transaction.extract_proof_data().or(self.proof_data.clone());
 
-        let estimated_calls = client.estimate(&calls, self.parameters.tip()).await?;
+        let (calls, estimated_calls) = if let ExecutableTransactionParameters::PrivateInvoke { ref private_invoke } = self.transaction {
+            let calls = self.build_private_sponsored_calls(private_invoke, sponsor_metadata);
+            let estimated = client
+                .estimate_with_proof(&calls, self.parameters.tip(), proof_data.as_ref().expect("PrivateInvoke must have proof_data"))
+                .await?;
+            (calls, estimated)
+        } else {
+            let calls = self.build_sponsored_calls(sponsor_metadata);
+            let estimated = client.estimate(&calls, self.parameters.tip()).await?;
+            (calls, estimated)
+        };
+
         let fee_estimate = estimated_calls.estimate();
 
         // We recompute the real estimate fee. Validation step is not included in the fee estimate
@@ -159,7 +208,10 @@ impl ExecutableTransaction {
         let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
 
         let estimated_final_calls = calls.with_estimate(final_fee_estimate);
-        Ok(EstimatedExecutableTransaction(estimated_final_calls))
+        Ok(EstimatedExecutableTransaction {
+            estimated_calls: estimated_final_calls,
+            proof_data,
+        })
     }
 
     pub async fn estimate_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
@@ -167,6 +219,7 @@ impl ExecutableTransaction {
             ExecutableTransactionParameters::Invoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
             ExecutableTransactionParameters::DirectInvoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
+            ExecutableTransactionParameters::PrivateInvoke { .. } => return Err(Error::InvalidTypedData),
             _ => return Err(Error::InvalidTypedData),
         };
 
@@ -189,7 +242,10 @@ impl ExecutableTransaction {
         let final_calls = self.build_calls(fee_transfer);
         let estimated_final_calls = final_calls.with_estimate(final_fee_estimate);
 
-        Ok(EstimatedExecutableTransaction(estimated_final_calls))
+        Ok(EstimatedExecutableTransaction {
+            estimated_calls: estimated_final_calls,
+            proof_data: None,
+        })
     }
 
     async fn compute_paid_fee(&self, client: &Client, base_estimate: Felt) -> Result<Felt, Error> {
@@ -198,6 +254,7 @@ impl ExecutableTransaction {
             ExecutableTransactionParameters::Invoke { invoke, .. } => client.compute_paid_fee_with_overhead_in_strk(invoke.user, base_estimate).await,
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => client.compute_paid_fee_with_overhead_in_strk(invoke.user, base_estimate).await,
             ExecutableTransactionParameters::DirectInvoke { invoke, .. } => client.compute_paid_fee_with_overhead_in_strk(invoke.user, base_estimate).await,
+            ExecutableTransactionParameters::PrivateInvoke { .. } => Ok(client.compute_paid_fee_in_strk(base_estimate)),
         }
     }
 
@@ -221,6 +278,23 @@ impl ExecutableTransaction {
         Calls::new(calls)
     }
 
+    /// Build calls for a private sponsored transaction using `execute_sponsored_calls`
+    fn build_private_sponsored_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, sponsor_metadata: Vec<Felt>) -> Calls {
+        let mut all_calls = vec![];
+        if let Some(ref efo_call) = private_invoke.execute_from_outside_call {
+            all_calls.push(efo_call.clone());
+        }
+        all_calls.extend(private_invoke.calls.clone());
+
+        let forwarder_call = Call {
+            to: self.forwarder,
+            selector: selector!("execute_sponsored_calls"),
+            calldata: CalldataBuilder::new().encode(&all_calls).encode(&sponsor_metadata).build(),
+        };
+
+        Calls::new(vec![forwarder_call])
+    }
+
     fn build_deploy_call(&self) -> Option<Call> {
         match &self.transaction {
             ExecutableTransactionParameters::Deploy { deployment, .. } => Some(deployment.as_call()),
@@ -234,6 +308,7 @@ impl ExecutableTransaction {
             ExecutableTransactionParameters::Invoke { invoke, .. } => invoke.message.to_call(invoke.user, &invoke.signature),
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => invoke.message.to_call(invoke.user, &invoke.signature),
             ExecutableTransactionParameters::DirectInvoke { invoke, .. } => invoke.execute_from_outside_call.clone(),
+            ExecutableTransactionParameters::PrivateInvoke { .. } => return None,
             _ => return None,
         };
 
@@ -254,6 +329,7 @@ impl ExecutableTransaction {
             ExecutableTransactionParameters::Invoke { invoke, .. } => invoke.message.to_call(invoke.user, &invoke.signature),
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => invoke.message.to_call(invoke.user, &invoke.signature),
             ExecutableTransactionParameters::DirectInvoke { invoke, .. } => invoke.execute_from_outside_call.clone(),
+            ExecutableTransactionParameters::PrivateInvoke { .. } => return None,
             _ => return None,
         };
 
@@ -270,11 +346,14 @@ impl ExecutableTransaction {
 
 /// Paymaster executable transaction that can be sent to Starknet
 #[derive(Debug)]
-pub struct EstimatedExecutableTransaction(EstimatedCalls);
+pub struct EstimatedExecutableTransaction {
+    estimated_calls: EstimatedCalls,
+    proof_data: Option<PrivateProofData>,
+}
 
 impl EstimatedExecutableTransaction {
     pub async fn execute(self, client: &Client) -> Result<InvokeTransactionResult, Error> {
-        let result = client.execute(&self.0, None).await?;
+        let result = client.execute(&self.estimated_calls, self.proof_data.as_ref()).await?;
 
         Ok(result)
     }
@@ -497,6 +576,7 @@ mod tests {
                 fee_mode: FeeMode::Sponsored { tip: TipPriority::Normal },
                 time_bounds: None,
             },
+            proof_data: None,
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -557,6 +637,7 @@ mod tests {
                 },
                 time_bounds: None,
             },
+            proof_data: None,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -638,6 +719,7 @@ mod tests {
                 },
                 time_bounds: None,
             },
+            proof_data: None,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();

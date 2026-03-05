@@ -92,8 +92,8 @@ pub struct Client {
 impl Client {
     /// Creates a new client given a configuration
     pub fn new(configuration: &Configuration) -> Self {
-        let starknet = Starknet::new(&configuration.starknet);
         Self {
+            starknet: Starknet::new(&configuration.starknet),
             price: PriceClient::new(&configuration.price),
 
             max_fee_multiplier: configuration.max_fee_multiplier,
@@ -102,19 +102,23 @@ impl Client {
             estimate_account: Starknet::new(&configuration.starknet).initialize_account(&configuration.estimate_account),
             relayers: RelayerManager::new(&configuration.clone().into()),
 
-            starknet,
-
             diagnostic_client: DiagnosticClient::new(configuration.starknet.chain_id),
         }
     }
 
     /// Execute the calls after they have been estimated. See method [`estimate`]
     pub async fn execute(&self, calls: &EstimatedCalls, proof_data: Option<&PrivateProofData>) -> Result<InvokeTransactionResult, Error> {
+        let is_privacy = proof_data.is_some();
         let mut relayer = self.relayers.lock_relayer().await?;
 
         let (result, duration) = measure_duration!(self.execute_with_retries(&mut relayer, calls, 3, proof_data).await);
         metric!(counter[execution_request] = 1, method = "execute");
         metric!(histogram[execution_request_duration_milliseconds] = duration.as_millis(), method = "execute");
+
+        if is_privacy {
+            metric!(counter[privacy_execution_request] = 1);
+            metric!(histogram[privacy_execution_request_duration_milliseconds] = duration.as_millis());
+        }
 
         match result {
             Ok(result) => {
@@ -130,6 +134,9 @@ impl Client {
             },
             Err(e) => {
                 metric!(counter[execution_request_error] = 1, method = "execute", error = e.to_string());
+                if is_privacy {
+                    metric!(counter[privacy_execution_request_error] = 1, error = e.to_string());
+                }
                 let _ = self.relayers.release_relayer(relayer).await;
 
                 Err(e)

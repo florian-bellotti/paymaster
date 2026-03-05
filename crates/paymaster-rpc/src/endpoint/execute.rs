@@ -1,12 +1,10 @@
-use paymaster_common::{measure_duration, metric};
 use paymaster_execution::ExecutableTransaction;
-use paymaster_starknet::transaction::{CalldataBuilder, Calls, ExecuteFromOutsideMessage, PrivateProofData};
+use paymaster_starknet::transaction::{ExecuteFromOutsideMessage, PrivateProofData};
 use paymaster_starknet::Signature;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use starknet::core::serde::unsigned_field_element::UfeHex;
 use starknet::core::types::{Call, Felt, TypedData};
-use starknet::macros::selector;
 
 use crate::endpoint::common::{DeploymentParameters, ExecutionParameters};
 use crate::endpoint::validation::check_service_is_available;
@@ -37,20 +35,50 @@ pub enum ExecutableTransactionParameters {
     },
 }
 
-impl TryFrom<ExecutableTransactionParameters> for paymaster_execution::ExecutableTransactionParameters {
+impl TryFrom<ExecutableTransactionParameters> for (paymaster_execution::ExecutableTransactionParameters, Option<PrivateProofData>) {
     type Error = Error;
 
     fn try_from(value: ExecutableTransactionParameters) -> Result<Self, Self::Error> {
         Ok(match value {
-            ExecutableTransactionParameters::Deploy { deployment } => Self::Deploy { deployment: deployment.into() },
-            ExecutableTransactionParameters::Invoke { invoke } => Self::Invoke { invoke: invoke.try_into()? },
-            ExecutableTransactionParameters::DeployAndInvoke { deployment, invoke } => Self::DeployAndInvoke {
-                deployment: deployment.into(),
-                invoke: invoke.try_into()?,
+            ExecutableTransactionParameters::Deploy { deployment } => {
+                (paymaster_execution::ExecutableTransactionParameters::Deploy { deployment: deployment.into() }, None)
             },
-            ExecutableTransactionParameters::PrivateInvoke { .. } => {
-                // PrivateInvoke is handled separately in execute_endpoint before this conversion
-                unreachable!("PrivateInvoke should be handled before conversion")
+            ExecutableTransactionParameters::Invoke { invoke } => {
+                (paymaster_execution::ExecutableTransactionParameters::Invoke { invoke: invoke.try_into()? }, None)
+            },
+            ExecutableTransactionParameters::DeployAndInvoke { deployment, invoke } => (
+                paymaster_execution::ExecutableTransactionParameters::DeployAndInvoke {
+                    deployment: deployment.into(),
+                    invoke: invoke.try_into()?,
+                },
+                None,
+            ),
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => {
+                let proof_data = PrivateProofData {
+                    proof: private_invoke.proof.clone(),
+                    proof_facts: private_invoke.proof_facts.clone(),
+                };
+
+                // Build execute_from_outside call if typed_data/signature/user_address are present
+                let execute_from_outside_call =
+                    if let (Some(typed_data), Some(signature), Some(user_address)) = (&private_invoke.typed_data, &private_invoke.signature, &private_invoke.user_address) {
+                        let message = ExecuteFromOutsideMessage::from_typed_data(typed_data)?;
+                        Some(message.to_call(*user_address, signature))
+                    } else {
+                        None
+                    };
+
+                (
+                    paymaster_execution::ExecutableTransactionParameters::PrivateInvoke {
+                        private_invoke: paymaster_execution::ExecutablePrivateInvokeParameters {
+                            user_address: private_invoke.user_address,
+                            execute_from_outside_call,
+                            calls: private_invoke.calls,
+                            proof_data: proof_data.clone(),
+                        },
+                    },
+                    Some(proof_data),
+                )
             },
         })
     }
@@ -113,14 +141,20 @@ pub struct ExecuteResponse {
 pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest) -> Result<ExecuteResponse, Error> {
     check_service_is_available(ctx).await?;
 
-    // Handle PrivateInvoke separately before converting to execution types
-    if let ExecutableTransactionParameters::PrivateInvoke { private_invoke } = &request.transaction {
-        let execution_params: paymaster_execution::ExecutionParameters = request.parameters.into();
-        return execute_private_invoke(ctx, private_invoke, execution_params).await;
+    let execution_params: paymaster_execution::ExecutionParameters = request.parameters.into();
+    let (transaction_params, proof_data): (paymaster_execution::ExecutableTransactionParameters, Option<PrivateProofData>) =
+        <(paymaster_execution::ExecutableTransactionParameters, Option<PrivateProofData>)>::try_from(request.transaction)?;
+
+    // Privacy-specific validations
+    if let Some(ref pd) = proof_data {
+        if !execution_params.fee_mode().is_sponsored() {
+            return Err(Error::PrivacyRequiresSponsoring);
+        }
+        if pd.proof.is_empty() || pd.proof_facts.is_empty() {
+            return Err(Error::PrivacyProofMissing);
+        }
     }
 
-    let execution_params: paymaster_execution::ExecutionParameters = request.parameters.into();
-    let transaction_params: paymaster_execution::ExecutableTransactionParameters = request.transaction.try_into()?;
     ctx.transaction_filter.filter(&transaction_params)?;
 
     let transaction = ExecutableTransaction {
@@ -128,6 +162,7 @@ pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest)
         gas_tank_address: ctx.configuration.gas_tank.address,
         parameters: execution_params,
         transaction: transaction_params,
+        proof_data,
     };
 
     let estimated_transaction = if transaction.parameters.fee_mode().is_sponsored() {
@@ -145,86 +180,6 @@ pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest)
         transaction_hash: result.transaction_hash,
         tracking_id: Felt::ZERO,
     })
-}
-
-async fn execute_private_invoke(
-    ctx: &RequestContext<'_>,
-    params: &ExecutablePrivateInvokeParameters,
-    execution_params: paymaster_execution::ExecutionParameters,
-) -> Result<ExecuteResponse, Error> {
-    // Privacy transactions must be sponsored
-    if !execution_params.fee_mode().is_sponsored() {
-        return Err(Error::PrivacyRequiresSponsoring);
-    }
-
-    // Validate proof data is present
-    if params.proof.is_empty() || params.proof_facts.is_empty() {
-        return Err(Error::PrivacyProofMissing);
-    }
-
-    let proof_data = PrivateProofData {
-        proof: params.proof.clone(),
-        proof_facts: params.proof_facts.clone(),
-    };
-
-    // Validate and get sponsor metadata
-    let authenticated_api_key = ctx.validate_api_key().await?;
-
-    // Build call list: optionally prepend execute_from_outside (for approve wrapping)
-    let mut all_calls = vec![];
-    if let (Some(typed_data), Some(signature), Some(user_address)) =
-        (&params.typed_data, &params.signature, &params.user_address)
-    {
-        let message = ExecuteFromOutsideMessage::from_typed_data(typed_data)?;
-        let execute_from_outside_call = message.to_call(*user_address, signature);
-        all_calls.push(execute_from_outside_call);
-    }
-    all_calls.extend(params.calls.clone());
-
-    // Wrap calls in forwarder's execute_sponsored_calls for tracking
-    let forwarder_call = build_execute_sponsored_calls_call(
-        ctx.configuration.forwarder,
-        &all_calls,
-        &authenticated_api_key.sponsor_metadata,
-    );
-    let calls = Calls::new(vec![forwarder_call]);
-
-    // Estimate with proof data
-    let estimated_calls = ctx
-        .execution
-        .estimate_with_proof(&calls, execution_params.tip(), &proof_data)
-        .await?;
-
-    // Execute with proof data
-    let (result, duration) = measure_duration!(ctx.execution.execute(&estimated_calls, Some(&proof_data)).await);
-
-    metric!(counter[privacy_execution_request] = 1);
-    metric!(histogram[privacy_execution_request_duration_milliseconds] = duration.as_millis());
-
-    match result {
-        Ok(result) => Ok(ExecuteResponse {
-            transaction_hash: result.transaction_hash,
-            tracking_id: Felt::ZERO,
-        }),
-        Err(e) => {
-            metric!(counter[privacy_execution_request_error] = 1, error = e.to_string());
-            Err(e.into())
-        },
-    }
-}
-
-/// Build a call to the forwarder's `execute_sponsored_calls` entry point.
-///
-/// Serializes `calls` as a Cairo `Array<Call>` and appends `sponsor_metadata` as `Span<felt252>`.
-fn build_execute_sponsored_calls_call(forwarder: Felt, calls: &[Call], sponsor_metadata: &[Felt]) -> Call {
-    let calls_vec: Vec<Call> = calls.to_vec();
-    let metadata_vec: Vec<Felt> = sponsor_metadata.to_vec();
-
-    Call {
-        to: forwarder,
-        selector: selector!("execute_sponsored_calls"),
-        calldata: CalldataBuilder::new().encode(&calls_vec).encode(&metadata_vec).build(),
-    }
 }
 
 #[cfg(test)]
