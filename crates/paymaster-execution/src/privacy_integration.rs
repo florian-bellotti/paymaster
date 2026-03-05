@@ -10,6 +10,7 @@ use paymaster_relayer::lock::mock::MockLockLayer;
 use paymaster_relayer::lock::{LockLayerConfiguration, RelayerLock};
 use paymaster_relayer::RelayersConfiguration;
 use serde::Deserialize;
+use starknet::core::crypto::{ecdsa_sign, HashFunction};
 use starknet::core::types::{BlockId, BlockTag, Call, Felt};
 use starknet::macros::{felt, selector};
 use starknet::providers::jsonrpc::HttpTransport;
@@ -37,9 +38,9 @@ const ADMIN_PRIVATE_KEY: Felt = felt!("0x7021e74994902199b1fa41785e15ade56f3ba5d
 const RELAYER_ADDRESS: Felt = felt!("0x50ac57b136e4a5c99bff5bfaee3df7a67bd1ae031f2c3a8710d3c90f44a9250");
 const RELAYER_PRIVATE_KEY: Felt = felt!("0x460da728cca654d756dd051490d34f5db5124351e2c10b0bb2187d28b95d6d2");
 
-/// Acc1: account with canonical viewing key (key < MAX_VIEWING_KEY)
-const USER_ADDRESS: Felt = felt!("0x25405558840d3e0fe1f3b41cceaa9f2efdeca7fadf62e158daa2e309e64c3a3");
-const USER_VIEWING_KEY: Felt = felt!("0x254055ba847c3e93cfb4b24e1ee07c66e6e91a6a0de81ee3fdd87a97f3d8b76");
+/// Account used for privacy integration tests
+const USER_ADDRESS: Felt = felt!("0x048baf3ed1f0a03840186bd95063f63824d93bafd456439bfe667533437d9c91");
+const USER_VIEWING_KEY: Felt = felt!("0x3021e74994902111b1fa41785e15ade7b3331263b143f9d117022fd91a136fd");
 
 /// STRK fee token address on Privacy Integration env
 const STRK_FEE_TOKEN: Felt = felt!("0x70a5da4f557b77a9c54546e4bcc900806e28793d8e3eaaa207428d2387249b7");
@@ -151,42 +152,104 @@ struct L2ToL1Msg {
     payload: Vec<String>,
 }
 
+/// Compute INVOKE V3 transaction hash for the proving invocation.
+fn compute_proof_invoke_hash(calldata_felts: &[Felt], chain_id: Felt) -> Felt {
+    let prefix_invoke = Felt::from_raw([
+        513_398_556_346_534_256,
+        18_446_744_073_709_551_615,
+        18_446_744_073_709_551_615,
+        18_443_034_532_770_911_073,
+    ]);
+
+    let poseidon = HashFunction::poseidon();
+    let mut hasher = poseidon.stateful();
+
+    hasher.update(prefix_invoke);
+    hasher.update(Felt::THREE);
+    hasher.update(POOL_ADDRESS);
+
+    let fee_hash = {
+        let mut fee_hasher = poseidon.stateful();
+        fee_hasher.update(Felt::ZERO);
+
+        let mut buf = [0u8; 32];
+        buf[2..8].copy_from_slice(&[b'L', b'1', b'_', b'G', b'A', b'S']);
+        buf[8..16].copy_from_slice(&1u64.to_be_bytes());
+        fee_hasher.update(Felt::from_bytes_be(&buf));
+
+        let mut buf = [0u8; 32];
+        buf[2..8].copy_from_slice(&[b'L', b'2', b'_', b'G', b'A', b'S']);
+        buf[8..16].copy_from_slice(&0x989680u64.to_be_bytes());
+        fee_hasher.update(Felt::from_bytes_be(&buf));
+
+        let mut buf = [0u8; 32];
+        buf[1..8].copy_from_slice(&[b'L', b'1', b'_', b'D', b'A', b'T', b'A']);
+        buf[8..16].copy_from_slice(&1u64.to_be_bytes());
+        fee_hasher.update(Felt::from_bytes_be(&buf));
+
+        fee_hasher.finalize()
+    };
+    hasher.update(fee_hash);
+
+    hasher.update(poseidon.stateful().finalize());
+    hasher.update(chain_id);
+    hasher.update(Felt::ZERO);
+    hasher.update(Felt::ZERO);
+    hasher.update(poseidon.stateful().finalize());
+
+    let calldata_hash = {
+        let mut cd_hasher = poseidon.stateful();
+        for f in calldata_felts {
+            cd_hasher.update(*f);
+        }
+        cd_hasher.finalize()
+    };
+    hasher.update(calldata_hash);
+
+    hasher.finalize()
+}
+
 /// Call the proving service to prove a privacy transaction.
-///
-/// Builds an INVOKE_TXN_V3 wrapping `execute_view(user, viewing_key, client_actions)`
-/// on the pool, sends it to the proving service, and returns:
-/// - `proof`: STARK proof as Vec<u64> (decoded from base64)
-/// - `proof_facts`: proof metadata as Vec<Felt>
-/// - `server_actions`: server actions calldata for apply_actions (from L2->L1 message)
 async fn prove_transaction(user_address: Felt, viewing_key: Felt, client_actions_calldata: &[Felt]) -> (Vec<u64>, Vec<Felt>, Vec<Felt>) {
     // Build execute_view inner calldata: [user_addr, viewing_key, ...client_actions]
-    let mut execute_view_cd: Vec<String> = vec![format!("{:#x}", user_address), format!("{:#x}", viewing_key)];
-    for f in client_actions_calldata {
-        execute_view_cd.push(format!("{:#x}", f));
-    }
+    let mut execute_view_cd: Vec<Felt> = vec![user_address, viewing_key];
+    execute_view_cd.extend_from_slice(client_actions_calldata);
 
     // Build __execute__ calldata: [1, pool, selector, data_len, ...execute_view_calldata]
     let ev_selector = selector!("execute_view");
-    let mut calldata: Vec<String> = vec![
-        "0x1".to_string(),
-        format!("{:#x}", POOL_ADDRESS),
-        format!("{:#x}", ev_selector),
-        format!("{:#x}", Felt::from(execute_view_cd.len())),
+    let mut calldata_felts: Vec<Felt> = vec![
+        Felt::ONE,
+        POOL_ADDRESS,
+        ev_selector,
+        Felt::from(execute_view_cd.len()),
     ];
-    calldata.extend(execute_view_cd);
+    calldata_felts.extend(&execute_view_cd);
+
+    // Get chain ID and block number from RPC
+    let provider = rpc_provider();
+    let chain_id = provider.chain_id().await.unwrap();
+    let block_number = provider.block_number().await.unwrap();
+    // Use an older block to satisfy the pool's finality constraint
+    let proof_block = block_number.saturating_sub(20);
+
+    // Compute INVOKE V3 transaction hash and sign with user's private key
+    let tx_hash = compute_proof_invoke_hash(&calldata_felts, chain_id);
+    let signature = ecdsa_sign(&ADMIN_PRIVATE_KEY, &tx_hash).unwrap();
+
+    let calldata: Vec<String> = calldata_felts.iter().map(|f| format!("{:#x}", f)).collect();
 
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "starknet_proveTransaction",
         "params": {
-            "block_id": "latest",
+            "block_id": { "block_number": proof_block },
             "transaction": {
                 "type": "INVOKE",
                 "version": "0x3",
                 "sender_address": format!("{:#x}", POOL_ADDRESS),
                 "calldata": calldata,
-                "signature": ["0x0", "0x0"],
+                "signature": [format!("{:#x}", signature.r), format!("{:#x}", signature.s)],
                 "nonce": "0x0",
                 "resource_bounds": {
                     "l1_gas": { "max_amount": "0x1", "max_price_per_unit": "0x0" },
@@ -218,17 +281,19 @@ async fn prove_transaction(user_address: Felt, viewing_key: Felt, client_actions
 
     let result = json.result.expect("No result from proving service");
 
-    // Decode proof from base64 to Vec<u64>
+    // Decode proof from base64 to Vec<u64>.
+    // The starknet-rust provider serializes Vec<u64> as 4-byte LE chunks (u32 cast to u64),
+    // so we must decode the raw proof bytes the same way.
     use base64::Engine;
     let proof_bytes = base64::engine::general_purpose::STANDARD
         .decode(&result.proof)
         .expect("Invalid base64 proof");
     let proof: Vec<u64> = proof_bytes
-        .chunks(8)
+        .chunks(4)
         .map(|chunk| {
-            let mut arr = [0u8; 8];
+            let mut arr = [0u8; 4];
             arr[..chunk.len()].copy_from_slice(chunk);
-            u64::from_le_bytes(arr)
+            u32::from_le_bytes(arr) as u64
         })
         .collect();
 
@@ -259,65 +324,67 @@ async fn prove_transaction(user_address: Felt, viewing_key: Felt, client_actions
 // These tests verify the new execute-only flow (no build, no pool config).
 // The wallet builds calls + proof, paymaster just estimates and executes.
 
-// #[tokio::test]
-// async fn should_estimate_set_viewing_key_through_execution_client() {
-//     let execution_client = build_privacy_client();
-//
-//     // ClientAction::SetViewingKey (variant 0) with random=0x42
-//     let client_actions = vec![Felt::from(1u64), Felt::ZERO, Felt::from(0x42u64)];
-//
-//     // Prove via proving service
-//     let (proof, proof_facts, server_actions) =
-//         prove_transaction(USER_ADDRESS, USER_VIEWING_KEY, &client_actions).await;
-//
-//     // Build apply_actions call with server_actions from the proof
-//     let apply_actions_call = Call {
-//         to: POOL_ADDRESS,
-//         selector: selector!("apply_actions"),
-//         calldata: server_actions,
-//     };
-//     let calls = Calls::new(vec![apply_actions_call]);
-//     let proof_data = PrivateProofData { proof, proof_facts };
-//
-//     let result = execution_client
-//         .estimate_with_proof(&calls, TipPriority::Custom(0), &proof_data)
-//         .await;
-//
-//     assert!(result.is_ok(), "estimate_with_proof failed: {:?}", result.err());
-//     let estimated = result.unwrap();
-//     assert!(estimated.estimate().overall_fee > 0, "Overall fee should be positive");
-// }
+#[tokio::test]
+#[ignore = "Requires external proving service and clean on-chain state"]
+async fn should_estimate_set_viewing_key_through_execution_client() {
+    let execution_client = build_privacy_client();
 
-// #[tokio::test]
-// async fn should_execute_set_viewing_key_through_execution_client() {
-//     let execution_client = build_privacy_client();
-//
-//     // ClientAction::SetViewingKey (variant 0) with random=0x42
-//     let client_actions = vec![Felt::from(1u64), Felt::ZERO, Felt::from(0x42u64)];
-//
-//     // Prove via proving service
-//     let (proof, proof_facts, server_actions) =
-//         prove_transaction(USER_ADDRESS, USER_VIEWING_KEY, &client_actions).await;
-//
-//     // Build apply_actions call
-//     let apply_actions_call = Call {
-//         to: POOL_ADDRESS,
-//         selector: selector!("apply_actions"),
-//         calldata: server_actions,
-//     };
-//     let calls = Calls::new(vec![apply_actions_call]);
-//     let proof_data = PrivateProofData { proof, proof_facts };
-//
-//     // Estimate first
-//     let estimated = execution_client
-//         .estimate_with_proof(&calls, TipPriority::Custom(0), &proof_data)
-//         .await
-//         .expect("estimate_with_proof failed");
-//
-//     // Execute
-//     let result = execution_client.execute(&estimated, Some(&proof_data)).await;
-//
-//     assert!(result.is_ok(), "execute failed: {:?}", result.err());
-//     let tx_result = result.unwrap();
-//     assert_ne!(tx_result.transaction_hash, Felt::ZERO, "Transaction hash should be non-zero");
-// }
+    // ClientAction::SetViewingKey (variant 0) with random=0x42
+    let client_actions = vec![Felt::from(1u64), Felt::ZERO, Felt::from(0x42u64)];
+
+    // Prove via proving service
+    let (proof, proof_facts, server_actions) =
+        prove_transaction(USER_ADDRESS, USER_VIEWING_KEY, &client_actions).await;
+
+    // Build apply_actions call with server_actions from the proof
+    let apply_actions_call = Call {
+        to: POOL_ADDRESS,
+        selector: selector!("apply_actions"),
+        calldata: server_actions,
+    };
+    let calls = Calls::new(vec![apply_actions_call]);
+    let proof_data = PrivateProofData { proof, proof_facts };
+
+    let result = execution_client
+        .estimate_with_proof(&calls, TipPriority::Custom(0), &proof_data)
+        .await;
+
+    assert!(result.is_ok(), "estimate_with_proof failed: {:?}", result.err());
+    let estimated = result.unwrap();
+    assert!(estimated.estimate().overall_fee > 0, "Overall fee should be positive");
+}
+
+#[tokio::test]
+#[ignore = "Requires external proving service and clean on-chain state"]
+async fn should_execute_set_viewing_key_through_execution_client() {
+    let execution_client = build_privacy_client();
+
+    // ClientAction::SetViewingKey (variant 0) with random=0x42
+    let client_actions = vec![Felt::from(1u64), Felt::ZERO, Felt::from(0x42u64)];
+
+    // Prove via proving service
+    let (proof, proof_facts, server_actions) =
+        prove_transaction(USER_ADDRESS, USER_VIEWING_KEY, &client_actions).await;
+
+    // Build apply_actions call
+    let apply_actions_call = Call {
+        to: POOL_ADDRESS,
+        selector: selector!("apply_actions"),
+        calldata: server_actions,
+    };
+    let calls = Calls::new(vec![apply_actions_call]);
+    let proof_data = PrivateProofData { proof, proof_facts };
+
+    // Estimate first
+    let estimated = execution_client
+        .estimate_with_proof(&calls, TipPriority::Custom(0), &proof_data)
+        .await
+        .expect("estimate_with_proof failed");
+
+    // Execute
+    let result = execution_client.execute(&estimated, Some(&proof_data)).await;
+
+    assert!(result.is_ok(), "execute failed: {:?}", result.err());
+    let tx_result = result.unwrap();
+    assert_ne!(tx_result.transaction_hash, Felt::ZERO, "Transaction hash should be non-zero");
+}

@@ -1,6 +1,6 @@
 use paymaster_common::{measure_duration, metric};
 use paymaster_execution::ExecutableTransaction;
-use paymaster_starknet::transaction::{CalldataBuilder, Calls, PrivateProofData};
+use paymaster_starknet::transaction::{CalldataBuilder, Calls, ExecuteFromOutsideMessage, PrivateProofData};
 use paymaster_starknet::Signature;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -81,6 +81,17 @@ impl TryFrom<ExecutableInvokeParameters> for paymaster_execution::ExecutableInvo
 #[serde_as]
 #[derive(Serialize, Deserialize)]
 pub struct ExecutablePrivateInvokeParameters {
+    #[serde_as(as = "Option<UfeHex>")]
+    #[serde(default)]
+    pub user_address: Option<Felt>,
+
+    #[serde(default)]
+    pub typed_data: Option<TypedData>,
+
+    #[serde_as(as = "Option<Vec<UfeHex>>")]
+    #[serde(default)]
+    pub signature: Option<Signature>,
+
     pub calls: Vec<Call>,
 
     pub proof: Vec<u64>,
@@ -159,8 +170,23 @@ async fn execute_private_invoke(
     // Validate and get sponsor metadata
     let authenticated_api_key = ctx.validate_api_key().await?;
 
-    // Build forwarder call: execute_sponsored_calls(calls, sponsor_metadata)
-    let forwarder_call = build_execute_sponsored_calls_call(ctx.configuration.forwarder, &params.calls, &authenticated_api_key.sponsor_metadata);
+    // Build call list: optionally prepend execute_from_outside (for approve wrapping)
+    let mut all_calls = vec![];
+    if let (Some(typed_data), Some(signature), Some(user_address)) =
+        (&params.typed_data, &params.signature, &params.user_address)
+    {
+        let message = ExecuteFromOutsideMessage::from_typed_data(typed_data)?;
+        let execute_from_outside_call = message.to_call(*user_address, signature);
+        all_calls.push(execute_from_outside_call);
+    }
+    all_calls.extend(params.calls.clone());
+
+    // Wrap calls in forwarder's execute_sponsored_calls for tracking
+    let forwarder_call = build_execute_sponsored_calls_call(
+        ctx.configuration.forwarder,
+        &all_calls,
+        &authenticated_api_key.sponsor_metadata,
+    );
     let calls = Calls::new(vec![forwarder_call]);
 
     // Estimate with proof data
