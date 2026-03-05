@@ -227,7 +227,11 @@ impl ExecutableTransaction {
         let paid_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
         let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
 
-        let estimated_final_calls = calls.with_estimate(final_fee_estimate);
+        let estimated_final_calls = if let Some(proof_data) = proof_data {
+            calls.with_estimate_and_proof(final_fee_estimate, proof_data)
+        } else {
+            calls.with_estimate(final_fee_estimate)
+        };
         Ok(EstimatedExecutableTransaction(estimated_final_calls))
     }
 
