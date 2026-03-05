@@ -8,8 +8,11 @@ pub enum Error {
     #[error("privacy requires sponsoring")]
     PrivacyRequiresSponsoring,
 
-    #[error("privacy_pool address is not configured")]
-    PrivacyPoolNotConfigured,
+    #[error("privacy pool address is not whitelisted")]
+    PrivacyPoolNotWhitelisted,
+
+    #[error("invalid apply_actions selector")]
+    InvalidApplyActionsSelector,
 
     #[error("invalid nonce")]
     InvalidNonce,

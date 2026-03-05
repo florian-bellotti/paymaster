@@ -138,12 +138,7 @@ impl Client {
     // Execute the transaction at most n times in the case where it fails because of an invalid nonce.
     // Note that if the transaction fails for a differant reason than an invalid nonce, this function returns the
     // error.
-    async fn execute_with_retries(
-        &self,
-        relayer: &mut LockedRelayer,
-        calls: &EstimatedCalls,
-        n_retries: usize,
-    ) -> Result<InvokeTransactionResult, Error> {
+    async fn execute_with_retries(&self, relayer: &mut LockedRelayer, calls: &EstimatedCalls, n_retries: usize) -> Result<InvokeTransactionResult, Error> {
         for _ in 0..n_retries {
             match relayer.execute(calls).await {
                 Ok(result) => return Ok(result),

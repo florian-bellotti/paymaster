@@ -3,6 +3,7 @@ use paymaster_starknet::transaction::{CalldataBuilder, Calls, EstimatedCalls, Ex
 use paymaster_starknet::Signature;
 use starknet::core::types::{Call, Felt, InvokeTransactionResult, TypedData};
 use starknet::macros::selector;
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::execution::deploy::DeploymentParameters;
@@ -97,12 +98,19 @@ pub struct ExecutablePrivateInvokeParameters {
     pub user: Option<Felt>,
     pub signature: Option<Signature>,
     pub message: Option<ExecuteFromOutsideMessage>,
-    pub apply_actions_calldata: Vec<Felt>,
+    pub apply_actions_call: Call,
     pub proof_data: PrivateProofData,
 }
 
 impl ExecutablePrivateInvokeParameters {
-    pub fn new(user: Option<Felt>, typed_data: Option<TypedData>, signature: Option<Signature>, apply_actions_calldata: Vec<Felt>, proof: Vec<u64>, proof_facts: Vec<Felt>) -> Result<Self, Error> {
+    pub fn new(
+        user: Option<Felt>,
+        typed_data: Option<TypedData>,
+        signature: Option<Signature>,
+        apply_actions_call: Call,
+        proof: Vec<u64>,
+        proof_facts: Vec<Felt>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             user,
             signature,
@@ -111,7 +119,7 @@ impl ExecutablePrivateInvokeParameters {
             } else {
                 None
             },
-            apply_actions_calldata,
+            apply_actions_call,
             proof_data: PrivateProofData { proof, proof_facts },
         })
     }
@@ -122,12 +130,11 @@ impl ExecutablePrivateInvokeParameters {
         if let Some(message) = &self.message {
             message.nonce().hash(&mut hasher);
         }
-        self.apply_actions_calldata.hash(&mut hasher);
+        self.apply_actions_call.calldata.hash(&mut hasher);
         self.proof_data.hash(&mut hasher);
         hasher.finish()
     }
 }
-
 
 #[derive(Debug, Hash)]
 pub struct ExecutableDirectInvokeParameters {
@@ -193,8 +200,8 @@ pub struct ExecutableTransaction {
     /// Execution parameters which should come out from the response of the [`buildTransaction`] endpoint
     pub parameters: ExecutionParameters,
 
-    /// Privacy pool contract address used for building apply_actions calls
-    pub privacy_pool: Option<Felt>,
+    /// Whitelisted privacy pool contract addresses
+    pub privacy_pools: HashSet<Felt>,
 }
 
 impl ExecutableTransaction {
@@ -221,7 +228,7 @@ impl ExecutableTransaction {
         let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
 
         let estimated_final_calls = calls.with_estimate(final_fee_estimate);
-        Ok(EstimatedExecutableTransaction { estimated_calls: estimated_final_calls })
+        Ok(EstimatedExecutableTransaction(estimated_final_calls))
     }
 
     pub async fn estimate_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
@@ -252,7 +259,7 @@ impl ExecutableTransaction {
         let final_calls = self.build_calls(fee_transfer);
         let estimated_final_calls = final_calls.with_estimate(final_fee_estimate);
 
-        Ok(EstimatedExecutableTransaction { estimated_calls: estimated_final_calls })
+        Ok(EstimatedExecutableTransaction(estimated_final_calls))
     }
 
     async fn compute_paid_fee(&self, client: &Client, base_estimate: Felt) -> Result<Felt, Error> {
@@ -287,7 +294,14 @@ impl ExecutableTransaction {
 
     /// Build calls for a private sponsored transaction using `execute_sponsored_calls`
     fn build_private_sponsored_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, sponsor_metadata: Vec<Felt>) -> Result<Calls, Error> {
-        let privacy_pool = self.privacy_pool.ok_or(Error::PrivacyPoolNotConfigured)?;
+        let apply_call = &private_invoke.apply_actions_call;
+
+        if !self.privacy_pools.contains(&apply_call.to) {
+            return Err(Error::PrivacyPoolNotWhitelisted);
+        }
+        if apply_call.selector != selector!("apply_actions") {
+            return Err(Error::InvalidApplyActionsSelector);
+        }
 
         let mut all_calls: Vec<Call> = vec![];
 
@@ -295,11 +309,7 @@ impl ExecutableTransaction {
             all_calls.push(message.to_call(*user, signature));
         }
 
-        all_calls.push(Call {
-            to: privacy_pool,
-            selector: selector!("apply_actions"),
-            calldata: private_invoke.apply_actions_calldata.clone(),
-        });
+        all_calls.push(apply_call.clone());
 
         let forwarder_call = Call {
             to: self.forwarder,
@@ -361,13 +371,11 @@ impl ExecutableTransaction {
 
 /// Paymaster executable transaction that can be sent to Starknet
 #[derive(Debug)]
-pub struct EstimatedExecutableTransaction {
-    estimated_calls: EstimatedCalls,
-}
+pub struct EstimatedExecutableTransaction(EstimatedCalls);
 
 impl EstimatedExecutableTransaction {
     pub async fn execute(self, client: &Client) -> Result<InvokeTransactionResult, Error> {
-        let result = client.execute(&self.estimated_calls).await?;
+        let result = client.execute(&self.0).await?;
 
         Ok(result)
     }
@@ -388,6 +396,7 @@ mod tests {
     use starknet::core::types::{Call, Felt};
     use starknet::macros::{felt, selector};
     use starknet::signers::SigningKey;
+    use std::collections::HashSet;
 
     #[test]
     fn extract_gas_transfer_from_raw_call_works() {
@@ -590,7 +599,7 @@ mod tests {
                 fee_mode: FeeMode::Sponsored { tip: TipPriority::Normal },
                 time_bounds: None,
             },
-            privacy_pool: None,
+            privacy_pools: HashSet::new(),
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -651,7 +660,7 @@ mod tests {
                 },
                 time_bounds: None,
             },
-            privacy_pool: None,
+            privacy_pools: HashSet::new(),
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -733,7 +742,7 @@ mod tests {
                 },
                 time_bounds: None,
             },
-            privacy_pool: None,
+            privacy_pools: HashSet::new(),
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();

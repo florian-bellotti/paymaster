@@ -13,7 +13,7 @@ pub struct Configuration {
     pub rpc: RPCConfiguration,
 
     pub forwarder: Felt,
-    pub privacy_pool: Option<Felt>,
+    pub privacy_pools: HashSet<Felt>,
     pub supported_tokens: HashSet<Felt>,
 
     pub max_fee_multiplier: f32,

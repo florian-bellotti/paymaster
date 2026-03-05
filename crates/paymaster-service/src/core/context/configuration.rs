@@ -45,7 +45,7 @@ pub struct Configuration {
 
     pub forwarder: Felt,
     #[serde(default)]
-    pub privacy_pool: Option<Felt>,
+    pub privacy_pools: HashSet<Felt>,
     pub supported_tokens: HashSet<Felt>,
 
     pub max_fee_multiplier: f32,

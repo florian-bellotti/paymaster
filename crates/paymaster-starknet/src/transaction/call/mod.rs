@@ -91,7 +91,7 @@ impl Calls {
                     .get_block_with_txs(BlockId::Tag(BlockTag::Latest), None)
                     .await?;
                 block.median_tip()
-            }
+            },
             Some(tip) => tip,
         };
 
@@ -217,14 +217,14 @@ impl EstimatedCalls {
         match &result {
             Err(AccountError::Provider(e @ ProviderError::RateLimited)) => {
                 error!("{}", e);
-            }
+            },
             Err(AccountError::Provider(e @ ProviderError::ArrayLengthMismatch)) => {
                 error!("{}", e);
-            }
+            },
             Err(AccountError::Provider(ProviderError::Other(error))) => {
                 error!("{}", error);
-            }
-            _ => {}
+            },
+            _ => {},
         };
 
         Ok(result?)

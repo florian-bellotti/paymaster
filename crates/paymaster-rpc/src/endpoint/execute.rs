@@ -3,7 +3,7 @@ use paymaster_starknet::Signature;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use starknet::core::serde::unsigned_field_element::UfeHex;
-use starknet::core::types::{Felt, TypedData};
+use starknet::core::types::{Call, Felt, TypedData};
 
 use crate::endpoint::common::{DeploymentParameters, ExecutionParameters};
 use crate::endpoint::validation::check_service_is_available;
@@ -46,10 +46,10 @@ impl TryFrom<ExecutableTransactionParameters> for paymaster_execution::Executabl
                 invoke: invoke.try_into()?,
             },
             ExecutableTransactionParameters::PrivateInvoke { private_invoke } => Self::PrivateInvoke {
-                private_invoke: private_invoke.try_into()?
+                private_invoke: private_invoke.try_into()?,
             },
         })
-}
+    }
 }
 
 #[serde_as]
@@ -88,8 +88,7 @@ pub struct ExecutablePrivateInvokeParameters {
     #[serde(default)]
     pub signature: Option<Signature>,
 
-    #[serde_as(as = "Vec<UfeHex>")]
-    pub apply_actions_calldata: Vec<Felt>,
+    pub apply_actions_call: Call,
 
     pub proof: Vec<u64>,
 
@@ -101,7 +100,14 @@ impl TryFrom<ExecutablePrivateInvokeParameters> for paymaster_execution::Executa
     type Error = Error;
 
     fn try_from(value: ExecutablePrivateInvokeParameters) -> Result<Self, Self::Error> {
-        let result = Self::new(value.user_address, value.typed_data, value.signature, value.apply_actions_calldata, value.proof, value.proof_facts)?;
+        let result = Self::new(
+            value.user_address,
+            value.typed_data,
+            value.signature,
+            value.apply_actions_call,
+            value.proof,
+            value.proof_facts,
+        )?;
         Ok(result)
     }
 }
@@ -127,7 +133,7 @@ pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest)
         gas_tank_address,
         parameters: request.parameters.into(),
         transaction: request.transaction.try_into()?,
-        privacy_pool: ctx.configuration.privacy_pool,
+        privacy_pools: ctx.configuration.privacy_pools.clone(),
     };
 
     ctx.transaction_filter.filter(&transaction.transaction)?;
