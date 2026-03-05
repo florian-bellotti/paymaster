@@ -51,7 +51,19 @@ impl Calls {
     }
 
     pub fn with_estimate(self, estimate: TransactionGasEstimate) -> EstimatedCalls {
-        EstimatedCalls { calls: self, estimate }
+        EstimatedCalls {
+            calls: self,
+            estimate,
+            proof_data: None,
+        }
+    }
+
+    pub fn with_estimate_and_proof(self, estimate: TransactionGasEstimate, proof_data: PrivateProofData) -> EstimatedCalls {
+        EstimatedCalls {
+            calls: self,
+            estimate,
+            proof_data: Some(proof_data),
+        }
     }
 
     pub async fn estimate(&self, account: &StarknetAccount, tip: Option<u64>) -> Result<EstimatedCalls, Error> {
@@ -79,7 +91,7 @@ impl Calls {
                     .get_block_with_txs(BlockId::Tag(BlockTag::Latest), None)
                     .await?;
                 block.median_tip()
-            },
+            }
             Some(tip) => tip,
         };
 
@@ -91,7 +103,9 @@ impl Calls {
             .estimate_fee()
             .await?;
 
-        Ok(self.clone().with_estimate(TransactionGasEstimate::new(result, tip)))
+        Ok(self
+            .clone()
+            .with_estimate_and_proof(TransactionGasEstimate::new(result, tip), proof_data.clone()))
     }
 
     pub async fn execute(&self, account: &StarknetAccount, nonce: Felt) -> Result<InvokeTransactionResult, Error> {
@@ -172,6 +186,7 @@ impl Calls {
 pub struct EstimatedCalls {
     calls: Calls,
     estimate: TransactionGasEstimate,
+    proof_data: Option<PrivateProofData>,
 }
 
 impl EstimatedCalls {
@@ -180,7 +195,7 @@ impl EstimatedCalls {
     }
 
     pub async fn execute(&self, account: &StarknetAccount, nonce: Felt) -> Result<InvokeTransactionResult, Error> {
-        let result = account
+        let mut execution = account
             .execute_v3(self.calls.to_vec())
             .nonce(nonce)
             .l1_gas(self.estimate.l1_gas_consumed())
@@ -189,53 +204,27 @@ impl EstimatedCalls {
             .l2_gas_price(self.estimate.l2_gas_price()?)
             .l1_data_gas(self.estimate.l1_data_gas_consumed())
             .l1_data_gas_price(self.estimate.l1_data_gas_price()?)
-            .tip(self.estimate.tip())
-            .send()
-            .await;
+            .tip(self.estimate.tip());
+
+        if let Some(proof_data) = &self.proof_data {
+            execution = execution
+                .proof_facts(proof_data.proof_facts.clone())
+                .proof(proof_data.proof.clone());
+        }
+
+        let result = execution.send().await;
 
         match &result {
             Err(AccountError::Provider(e @ ProviderError::RateLimited)) => {
                 error!("{}", e);
-            },
+            }
             Err(AccountError::Provider(e @ ProviderError::ArrayLengthMismatch)) => {
                 error!("{}", e);
-            },
+            }
             Err(AccountError::Provider(ProviderError::Other(error))) => {
                 error!("{}", error);
-            },
-            _ => {},
-        };
-
-        Ok(result?)
-    }
-
-    pub async fn execute_with_proof(&self, account: &StarknetAccount, nonce: Felt, proof_data: &PrivateProofData) -> Result<InvokeTransactionResult, Error> {
-        let result = account
-            .execute_v3(self.calls.to_vec())
-            .nonce(nonce)
-            .l1_gas(self.estimate.l1_gas_consumed())
-            .l1_gas_price(self.estimate.l1_gas_price()?)
-            .l2_gas(self.estimate.l2_gas_consumed())
-            .l2_gas_price(self.estimate.l2_gas_price()?)
-            .l1_data_gas(self.estimate.l1_data_gas_consumed())
-            .l1_data_gas_price(self.estimate.l1_data_gas_price()?)
-            .tip(self.estimate.tip())
-            .proof_facts(proof_data.proof_facts.clone())
-            .proof(proof_data.proof.clone())
-            .send()
-            .await;
-
-        match &result {
-            Err(AccountError::Provider(e @ ProviderError::RateLimited)) => {
-                error!("{}", e);
-            },
-            Err(AccountError::Provider(e @ ProviderError::ArrayLengthMismatch)) => {
-                error!("{}", e);
-            },
-            Err(AccountError::Provider(ProviderError::Other(error))) => {
-                error!("{}", error);
-            },
-            _ => {},
+            }
+            _ => {}
         };
 
         Ok(result?)

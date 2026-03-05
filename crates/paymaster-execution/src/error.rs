@@ -5,6 +5,12 @@ pub enum Error {
     #[error("internal error {0}")]
     Internal(String),
 
+    #[error("privacy requires sponsoring")]
+    PrivacyRequiresSponsoring,
+
+    #[error("privacy_pool address is not configured")]
+    PrivacyPoolNotConfigured,
+
     #[error("invalid nonce")]
     InvalidNonce,
 

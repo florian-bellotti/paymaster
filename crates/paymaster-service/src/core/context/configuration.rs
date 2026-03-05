@@ -44,6 +44,8 @@ pub struct Configuration {
     pub rpc: paymaster_rpc::RPCConfiguration,
 
     pub forwarder: Felt,
+    #[serde(default)]
+    pub privacy_pool: Option<Felt>,
     pub supported_tokens: HashSet<Felt>,
 
     pub max_fee_multiplier: f32,

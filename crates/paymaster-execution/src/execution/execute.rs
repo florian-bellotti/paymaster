@@ -93,33 +93,46 @@ impl ExecutableInvokeParameters {
 }
 
 #[derive(Debug, Hash)]
-pub struct ExecutableDirectInvokeParameters {
-    pub user: Felt,
-    pub execute_from_outside_call: Call,
-}
-
-#[derive(Debug)]
 pub struct ExecutablePrivateInvokeParameters {
-    pub user_address: Option<Felt>,
-    pub execute_from_outside_call: Option<Call>,
-    pub calls: Vec<Call>,
+    pub user: Option<Felt>,
+    pub signature: Option<Signature>,
+    pub message: Option<ExecuteFromOutsideMessage>,
+    pub apply_actions_calldata: Vec<Felt>,
     pub proof_data: PrivateProofData,
 }
 
-impl Hash for ExecutablePrivateInvokeParameters {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.calls.hash(state);
-        self.proof_data.hash(state);
-    }
-}
-
 impl ExecutablePrivateInvokeParameters {
+    pub fn new(user: Option<Felt>, typed_data: Option<TypedData>, signature: Option<Signature>, apply_actions_calldata: Vec<Felt>, proof: Vec<u64>, proof_facts: Vec<Felt>) -> Result<Self, Error> {
+        Ok(Self {
+            user,
+            signature,
+            message: if let Some(typed_data) = typed_data {
+                Some(ExecuteFromOutsideMessage::from_typed_data(&typed_data)?)
+            } else {
+                None
+            },
+            apply_actions_calldata,
+            proof_data: PrivateProofData { proof, proof_facts },
+        })
+    }
+
     pub fn get_unique_identifier(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.calls.hash(&mut hasher);
+        self.user.hash(&mut hasher);
+        if let Some(message) = &self.message {
+            message.nonce().hash(&mut hasher);
+        }
+        self.apply_actions_calldata.hash(&mut hasher);
         self.proof_data.hash(&mut hasher);
         hasher.finish()
     }
+}
+
+
+#[derive(Debug, Hash)]
+pub struct ExecutableDirectInvokeParameters {
+    pub user: Felt,
+    pub execute_from_outside_call: Call,
 }
 
 impl ExecutableDirectInvokeParameters {
@@ -180,17 +193,17 @@ pub struct ExecutableTransaction {
     /// Execution parameters which should come out from the response of the [`buildTransaction`] endpoint
     pub parameters: ExecutionParameters,
 
-    /// Optional proof data for privacy transactions
-    pub proof_data: Option<PrivateProofData>,
+    /// Privacy pool contract address used for building apply_actions calls
+    pub privacy_pool: Option<Felt>,
 }
 
 impl ExecutableTransaction {
     /// Estimate a sponsored transaction which is a transaction that will be paid by the relayer
     pub async fn estimate_sponsored_transaction(self, client: &Client, sponsor_metadata: Vec<Felt>) -> Result<EstimatedExecutableTransaction, Error> {
-        let proof_data = self.transaction.extract_proof_data().or(self.proof_data.clone());
+        let proof_data = self.transaction.extract_proof_data();
 
         let (calls, estimated_calls) = if let ExecutableTransactionParameters::PrivateInvoke { ref private_invoke } = self.transaction {
-            let calls = self.build_private_sponsored_calls(private_invoke, sponsor_metadata);
+            let calls = self.build_private_sponsored_calls(private_invoke, sponsor_metadata)?;
             let estimated = client
                 .estimate_with_proof(&calls, self.parameters.tip(), proof_data.as_ref().expect("PrivateInvoke must have proof_data"))
                 .await?;
@@ -208,10 +221,7 @@ impl ExecutableTransaction {
         let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
 
         let estimated_final_calls = calls.with_estimate(final_fee_estimate);
-        Ok(EstimatedExecutableTransaction {
-            estimated_calls: estimated_final_calls,
-            proof_data,
-        })
+        Ok(EstimatedExecutableTransaction { estimated_calls: estimated_final_calls })
     }
 
     pub async fn estimate_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
@@ -219,7 +229,7 @@ impl ExecutableTransaction {
             ExecutableTransactionParameters::Invoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
             ExecutableTransactionParameters::DirectInvoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
-            ExecutableTransactionParameters::PrivateInvoke { .. } => return Err(Error::InvalidTypedData),
+            ExecutableTransactionParameters::PrivateInvoke { .. } => return Err(Error::PrivacyRequiresSponsoring),
             _ => return Err(Error::InvalidTypedData),
         };
 
@@ -242,10 +252,7 @@ impl ExecutableTransaction {
         let final_calls = self.build_calls(fee_transfer);
         let estimated_final_calls = final_calls.with_estimate(final_fee_estimate);
 
-        Ok(EstimatedExecutableTransaction {
-            estimated_calls: estimated_final_calls,
-            proof_data: None,
-        })
+        Ok(EstimatedExecutableTransaction { estimated_calls: estimated_final_calls })
     }
 
     async fn compute_paid_fee(&self, client: &Client, base_estimate: Felt) -> Result<Felt, Error> {
@@ -279,12 +286,20 @@ impl ExecutableTransaction {
     }
 
     /// Build calls for a private sponsored transaction using `execute_sponsored_calls`
-    fn build_private_sponsored_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, sponsor_metadata: Vec<Felt>) -> Calls {
-        let mut all_calls = vec![];
-        if let Some(ref efo_call) = private_invoke.execute_from_outside_call {
-            all_calls.push(efo_call.clone());
+    fn build_private_sponsored_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, sponsor_metadata: Vec<Felt>) -> Result<Calls, Error> {
+        let privacy_pool = self.privacy_pool.ok_or(Error::PrivacyPoolNotConfigured)?;
+
+        let mut all_calls: Vec<Call> = vec![];
+
+        if let (Some(ref message), Some(ref user), Some(ref signature)) = (&private_invoke.message, &private_invoke.user, &private_invoke.signature) {
+            all_calls.push(message.to_call(*user, signature));
         }
-        all_calls.extend(private_invoke.calls.clone());
+
+        all_calls.push(Call {
+            to: privacy_pool,
+            selector: selector!("apply_actions"),
+            calldata: private_invoke.apply_actions_calldata.clone(),
+        });
 
         let forwarder_call = Call {
             to: self.forwarder,
@@ -292,7 +307,7 @@ impl ExecutableTransaction {
             calldata: CalldataBuilder::new().encode(&all_calls).encode(&sponsor_metadata).build(),
         };
 
-        Calls::new(vec![forwarder_call])
+        Ok(Calls::new(vec![forwarder_call]))
     }
 
     fn build_deploy_call(&self) -> Option<Call> {
@@ -348,12 +363,11 @@ impl ExecutableTransaction {
 #[derive(Debug)]
 pub struct EstimatedExecutableTransaction {
     estimated_calls: EstimatedCalls,
-    proof_data: Option<PrivateProofData>,
 }
 
 impl EstimatedExecutableTransaction {
     pub async fn execute(self, client: &Client) -> Result<InvokeTransactionResult, Error> {
-        let result = client.execute(&self.estimated_calls, self.proof_data.as_ref()).await?;
+        let result = client.execute(&self.estimated_calls).await?;
 
         Ok(result)
     }
@@ -576,7 +590,7 @@ mod tests {
                 fee_mode: FeeMode::Sponsored { tip: TipPriority::Normal },
                 time_bounds: None,
             },
-            proof_data: None,
+            privacy_pool: None,
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -637,7 +651,7 @@ mod tests {
                 },
                 time_bounds: None,
             },
-            proof_data: None,
+            privacy_pool: None,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -719,7 +733,7 @@ mod tests {
                 },
                 time_bounds: None,
             },
-            proof_data: None,
+            privacy_pool: None,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();

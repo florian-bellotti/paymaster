@@ -1,10 +1,9 @@
 use paymaster_execution::ExecutableTransaction;
-use paymaster_starknet::transaction::{ExecuteFromOutsideMessage, PrivateProofData};
 use paymaster_starknet::Signature;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use starknet::core::serde::unsigned_field_element::UfeHex;
-use starknet::core::types::{Call, Felt, TypedData};
+use starknet::core::types::{Felt, TypedData};
 
 use crate::endpoint::common::{DeploymentParameters, ExecutionParameters};
 use crate::endpoint::validation::check_service_is_available;
@@ -35,53 +34,22 @@ pub enum ExecutableTransactionParameters {
     },
 }
 
-impl TryFrom<ExecutableTransactionParameters> for (paymaster_execution::ExecutableTransactionParameters, Option<PrivateProofData>) {
+impl TryFrom<ExecutableTransactionParameters> for paymaster_execution::ExecutableTransactionParameters {
     type Error = Error;
 
     fn try_from(value: ExecutableTransactionParameters) -> Result<Self, Self::Error> {
         Ok(match value {
-            ExecutableTransactionParameters::Deploy { deployment } => {
-                (paymaster_execution::ExecutableTransactionParameters::Deploy { deployment: deployment.into() }, None)
+            ExecutableTransactionParameters::Deploy { deployment } => Self::Deploy { deployment: deployment.into() },
+            ExecutableTransactionParameters::Invoke { invoke } => Self::Invoke { invoke: invoke.try_into()? },
+            ExecutableTransactionParameters::DeployAndInvoke { deployment, invoke } => Self::DeployAndInvoke {
+                deployment: deployment.into(),
+                invoke: invoke.try_into()?,
             },
-            ExecutableTransactionParameters::Invoke { invoke } => {
-                (paymaster_execution::ExecutableTransactionParameters::Invoke { invoke: invoke.try_into()? }, None)
-            },
-            ExecutableTransactionParameters::DeployAndInvoke { deployment, invoke } => (
-                paymaster_execution::ExecutableTransactionParameters::DeployAndInvoke {
-                    deployment: deployment.into(),
-                    invoke: invoke.try_into()?,
-                },
-                None,
-            ),
-            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => {
-                let proof_data = PrivateProofData {
-                    proof: private_invoke.proof.clone(),
-                    proof_facts: private_invoke.proof_facts.clone(),
-                };
-
-                // Build execute_from_outside call if typed_data/signature/user_address are present
-                let execute_from_outside_call =
-                    if let (Some(typed_data), Some(signature), Some(user_address)) = (&private_invoke.typed_data, &private_invoke.signature, &private_invoke.user_address) {
-                        let message = ExecuteFromOutsideMessage::from_typed_data(typed_data)?;
-                        Some(message.to_call(*user_address, signature))
-                    } else {
-                        None
-                    };
-
-                (
-                    paymaster_execution::ExecutableTransactionParameters::PrivateInvoke {
-                        private_invoke: paymaster_execution::ExecutablePrivateInvokeParameters {
-                            user_address: private_invoke.user_address,
-                            execute_from_outside_call,
-                            calls: private_invoke.calls,
-                            proof_data: proof_data.clone(),
-                        },
-                    },
-                    Some(proof_data),
-                )
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => Self::PrivateInvoke {
+                private_invoke: private_invoke.try_into()?
             },
         })
-    }
+}
 }
 
 #[serde_as]
@@ -120,12 +88,22 @@ pub struct ExecutablePrivateInvokeParameters {
     #[serde(default)]
     pub signature: Option<Signature>,
 
-    pub calls: Vec<Call>,
+    #[serde_as(as = "Vec<UfeHex>")]
+    pub apply_actions_calldata: Vec<Felt>,
 
     pub proof: Vec<u64>,
 
     #[serde_as(as = "Vec<UfeHex>")]
     pub proof_facts: Vec<Felt>,
+}
+
+impl TryFrom<ExecutablePrivateInvokeParameters> for paymaster_execution::ExecutablePrivateInvokeParameters {
+    type Error = Error;
+
+    fn try_from(value: ExecutablePrivateInvokeParameters) -> Result<Self, Self::Error> {
+        let result = Self::new(value.user_address, value.typed_data, value.signature, value.apply_actions_calldata, value.proof, value.proof_facts)?;
+        Ok(result)
+    }
 }
 
 #[serde_as]
@@ -141,29 +119,18 @@ pub struct ExecuteResponse {
 pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest) -> Result<ExecuteResponse, Error> {
     check_service_is_available(ctx).await?;
 
-    let execution_params: paymaster_execution::ExecutionParameters = request.parameters.into();
-    let (transaction_params, proof_data): (paymaster_execution::ExecutableTransactionParameters, Option<PrivateProofData>) =
-        <(paymaster_execution::ExecutableTransactionParameters, Option<PrivateProofData>)>::try_from(request.transaction)?;
-
-    // Privacy-specific validations
-    if let Some(ref pd) = proof_data {
-        if !execution_params.fee_mode().is_sponsored() {
-            return Err(Error::PrivacyRequiresSponsoring);
-        }
-        if pd.proof.is_empty() || pd.proof_facts.is_empty() {
-            return Err(Error::PrivacyProofMissing);
-        }
-    }
-
-    ctx.transaction_filter.filter(&transaction_params)?;
+    let forwarder = ctx.configuration.forwarder;
+    let gas_tank_address = ctx.configuration.gas_tank.address;
 
     let transaction = ExecutableTransaction {
-        forwarder: ctx.configuration.forwarder,
-        gas_tank_address: ctx.configuration.gas_tank.address,
-        parameters: execution_params,
-        transaction: transaction_params,
-        proof_data,
+        forwarder,
+        gas_tank_address,
+        parameters: request.parameters.into(),
+        transaction: request.transaction.try_into()?,
+        privacy_pool: ctx.configuration.privacy_pool,
     };
+
+    ctx.transaction_filter.filter(&transaction.transaction)?;
 
     let estimated_transaction = if transaction.parameters.fee_mode().is_sponsored() {
         let authenticated_api_key = ctx.validate_api_key().await?;

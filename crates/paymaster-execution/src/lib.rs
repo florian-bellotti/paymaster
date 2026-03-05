@@ -107,10 +107,10 @@ impl Client {
     }
 
     /// Execute the calls after they have been estimated. See method [`estimate`]
-    pub async fn execute(&self, calls: &EstimatedCalls, proof_data: Option<&PrivateProofData>) -> Result<InvokeTransactionResult, Error> {
+    pub async fn execute(&self, calls: &EstimatedCalls) -> Result<InvokeTransactionResult, Error> {
         let mut relayer = self.relayers.lock_relayer().await?;
 
-        let (result, duration) = measure_duration!(self.execute_with_retries(&mut relayer, calls, 3, proof_data).await);
+        let (result, duration) = measure_duration!(self.execute_with_retries(&mut relayer, calls, 3).await);
         metric!(counter[execution_request] = 1, method = "execute");
         metric!(histogram[execution_request_duration_milliseconds] = duration.as_millis(), method = "execute");
 
@@ -143,10 +143,9 @@ impl Client {
         relayer: &mut LockedRelayer,
         calls: &EstimatedCalls,
         n_retries: usize,
-        proof_data: Option<&PrivateProofData>,
     ) -> Result<InvokeTransactionResult, Error> {
         for _ in 0..n_retries {
-            match relayer.execute(calls, proof_data).await {
+            match relayer.execute(calls).await {
                 Ok(result) => return Ok(result),
                 Err(paymaster_relayer::Error::InvalidNonce) => {},
                 Err(e) => return Err(Error::Execution(e.to_string())),
