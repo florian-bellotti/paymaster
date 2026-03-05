@@ -41,9 +41,6 @@ use crate::contract::ContractClass;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-#[cfg(test)]
-mod privacy_integration;
-
 mod client;
 
 pub const DEFAULT_INTEGRATION_SEPOLIA_RPC_ENDPOINT: &str = "http://34.170.239.64:9545/rpc/v0_10";

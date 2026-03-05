@@ -17,9 +17,6 @@ pub mod testing;
 mod error;
 mod starknet;
 
-#[cfg(test)]
-mod privacy_integration;
-
 use diagnostics::DiagnosticClient;
 pub use error::Error;
 use paymaster_common::{measure_duration, metric};
