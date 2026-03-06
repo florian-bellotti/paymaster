@@ -207,6 +207,12 @@
         },
         {
           "$ref": "#/components/errors/TRANSACTION_EXECUTION_ERROR"
+        },
+        {
+          "$ref": "#/components/errors/PRIVACY_POOL_NOT_WHITELISTED"
+        },
+        {
+          "$ref": "#/components/errors/INVALID_APPLY_ACTIONS_SELECTOR"
         }
       ]
     }
@@ -277,6 +283,25 @@
                 "$ref": "#/components/schemas/PAYMASTER_EXECUTABLE_INVOKE"
               }
             }
+          },
+          {
+            "title": "Private Invoke",
+            "type": "object",
+            "required": [
+              "type",
+              "private_invoke"
+            ],
+            "properties": {
+              "type": {
+                "title": "Transaction type",
+                "const": ["private_invoke"]
+              },
+              "private_invoke": {
+                "title": "Private invoke data",
+                "description": "Privacy transaction data including the apply_actions call and ZK proof",
+                "$ref": "#/components/schemas/PAYMASTER_EXECUTABLE_PRIVATE_INVOKE"
+              }
+            }
           }
         ]
       },
@@ -302,6 +327,52 @@
             "title": "Signature",
             "description": "Signature of the associated Typed Data",
             "$ref": "#/components/schemas/SIGNATURE"
+          }
+        }
+      },
+      "PAYMASTER_EXECUTABLE_PRIVATE_INVOKE": {
+        "type": "object",
+        "required": [
+          "apply_actions_call",
+          "proof",
+          "proof_facts"
+        ],
+        "properties": {
+          "user_address": {
+            "title": "User Account",
+            "description": "The address of the user account (optional, required when an execute_from_outside call is included)",
+            "$ref": "#/components/schemas/ADDRESS"
+          },
+          "typed_data": {
+            "title": "Typed data",
+            "description": "Optional typed data wrapping user calls (e.g. approve) to be executed before the privacy action",
+            "$ref": "#/components/schemas/OUTSIDE_EXECUTION_TYPED_DATA"
+          },
+          "signature": {
+            "title": "Signature",
+            "description": "Signature of the associated typed data (required when typed_data is provided)",
+            "$ref": "#/components/schemas/SIGNATURE"
+          },
+          "apply_actions_call": {
+            "title": "Apply actions call",
+            "description": "The full Call targeting a whitelisted privacy pool contract with selector apply_actions",
+            "$ref": "#/components/schemas/CALL"
+          },
+          "proof": {
+            "title": "ZK proof",
+            "description": "The ZK proof as an array of u64 values",
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "proof_facts": {
+            "title": "Proof facts",
+            "description": "The proof facts used to verify the ZK proof on-chain",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FELT"
+            }
           }
         }
       },
@@ -1213,6 +1284,14 @@
       "INVALID_ID": {
         "code": 160,
         "message": "An error occurred (INVALID_ID)"
+      },
+      "PRIVACY_POOL_NOT_WHITELISTED": {
+        "code": 161,
+        "message": "An error occurred (PRIVACY_POOL_NOT_WHITELISTED)"
+      },
+      "INVALID_APPLY_ACTIONS_SELECTOR": {
+        "code": 162,
+        "message": "An error occurred (INVALID_APPLY_ACTIONS_SELECTOR)"
       },
       "UNKNOWN_ERROR": {
         "code": 163,
