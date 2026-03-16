@@ -90,7 +90,7 @@ pub struct ExecutablePrivateInvokeParameters {
 
     pub apply_actions_call: Call,
 
-    pub proof: Vec<u64>,
+    pub proof: String,
 
     #[serde_as(as = "Vec<UfeHex>")]
     pub proof_facts: Vec<Felt>,

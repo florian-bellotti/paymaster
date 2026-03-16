@@ -24,7 +24,7 @@ use crate::{ChainID, Error, Signature};
 
 #[derive(Debug, Clone, Hash)]
 pub struct PrivateProofData {
-    pub proof: Vec<u64>,
+    pub proof: String,
     pub proof_facts: Vec<Felt>,
 }
 

@@ -108,7 +108,7 @@ impl ExecutablePrivateInvokeParameters {
         typed_data: Option<TypedData>,
         signature: Option<Signature>,
         apply_actions_call: Call,
-        proof: Vec<u64>,
+        proof: String,
         proof_facts: Vec<Felt>,
     ) -> Result<Self, Error> {
         Ok(Self {

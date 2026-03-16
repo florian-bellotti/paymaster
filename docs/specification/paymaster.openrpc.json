@@ -360,11 +360,8 @@
           },
           "proof": {
             "title": "ZK proof",
-            "description": "The ZK proof as an array of u64 values",
-            "type": "array",
-            "items": {
-              "type": "integer"
-            }
+            "description": "The ZK proof as a string",
+            "type": "string"
           },
           "proof_facts": {
             "title": "Proof facts",

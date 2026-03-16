@@ -6,10 +6,10 @@ use paymaster_common::service::fallback::{Error, FailurePredicate, WithFallback}
 use starknet::core::types::{
     BlockHashAndNumber, BlockId, BroadcastedDeclareTransaction, BroadcastedDeployAccountTransaction, BroadcastedInvokeTransaction, BroadcastedTransaction,
     ConfirmedBlockId, ContractClass, ContractStorageKeys, DeclareTransactionResult, DeployAccountTransactionResult, EventFilter, EventsPage, FeeEstimate, Felt,
-    FunctionCall, Hash256, InvokeTransactionResult, MaybePreConfirmedBlockWithReceipts, MaybePreConfirmedBlockWithTxHashes, MaybePreConfirmedBlockWithTxs,
-    MaybePreConfirmedStateUpdate, MessageFeeEstimate, MessageStatus, MsgFromL1, SimulateTransactionsResult, SimulatedTransaction, SimulationFlag,
-    SimulationFlagForEstimateFee, StorageProof, SyncStatusType, TraceBlockTransactionsResult, TraceFlag, Transaction, TransactionReceiptWithBlockInfo,
-    TransactionResponseFlag, TransactionStatus, TransactionTrace,
+    FunctionCall, GetStorageAtResult, Hash256, InvokeTransactionResult, MaybePreConfirmedBlockWithReceipts, MaybePreConfirmedBlockWithTxHashes,
+    MaybePreConfirmedBlockWithTxs, MaybePreConfirmedStateUpdate, MessageFeeEstimate, MessageStatus, MsgFromL1, SimulateTransactionsResult, SimulatedTransaction,
+    SimulationFlag, SimulationFlagForEstimateFee, StorageProof, StorageResponseFlag, SyncStatusType, TraceBlockTransactionsResult, TraceFlag, Transaction,
+    TransactionReceiptWithBlockInfo, TransactionResponseFlag, TransactionStatus, TransactionTrace,
 };
 use starknet::providers::jsonrpc::{HttpTransport, JsonRpcClientError};
 use starknet::providers::{JsonRpcClient, Provider, ProviderError, ProviderRequestData, ProviderResponseData, Url};
@@ -145,14 +145,14 @@ impl Provider for StarknetClient {
     }
 
     /// Gets the value of the storage at the given address and key.
-    #[instrument(name = "get_storage_at", skip(self, contract_address, key, block_id), fields(contract_address = ?contract_address.as_ref(), key = ?key.as_ref(), block_id = ?block_id.as_ref()))]
-    async fn get_storage_at<A, K, B>(&self, contract_address: A, key: K, block_id: B) -> Result<Felt, ProviderError>
+    #[instrument(name = "get_storage_at", skip(self, contract_address, key, block_id, response_flags), fields(contract_address = ?contract_address.as_ref(), key = ?key.as_ref(), block_id = ?block_id.as_ref()))]
+    async fn get_storage_at<A, K, B>(&self, contract_address: A, key: K, block_id: B, response_flags: Option<&[StorageResponseFlag]>) -> Result<GetStorageAtResult, ProviderError>
     where
         A: AsRef<Felt> + Send + Sync,
         K: AsRef<Felt> + Send + Sync,
         B: AsRef<BlockId> + Send + Sync,
     {
-        call_with_fallback!(self.get_storage_at(contract_address, key, block_id))
+        call_with_fallback!(self.get_storage_at(contract_address, key, block_id, response_flags))
     }
 
     #[instrument(name = "get_messages_status", skip(self))]
