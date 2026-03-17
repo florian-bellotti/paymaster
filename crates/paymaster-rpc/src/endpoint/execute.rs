@@ -133,8 +133,8 @@ pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest)
         gas_tank_address,
         parameters: request.parameters.into(),
         transaction: request.transaction.try_into()?,
-        privacy_pools: ctx.configuration.privacy_pools.clone(),
-        pool_collect_fee_amount: ctx.configuration.pool_collect_fee_amount,
+        privacy_pool: ctx.configuration.privacy_pool,
+        privacy_pool_fee_amount: ctx.configuration.privacy_pool_fee_amount,
     };
 
     ctx.transaction_filter.filter(&transaction.transaction)?;

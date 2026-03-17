@@ -13,11 +13,11 @@ pub struct Configuration {
     pub rpc: RPCConfiguration,
 
     pub forwarder: Felt,
-    pub privacy_pools: HashSet<Felt>,
+    pub privacy_pool: Felt,
     pub supported_tokens: HashSet<Felt>,
 
     /// Pool's collect_fee cost in STRK (from pool's get_fee_amount())
-    pub pool_collect_fee_amount: u128,
+    pub privacy_pool_fee_amount: u128,
 
     pub max_fee_multiplier: f32,
     pub provider_fee_overhead: f32,

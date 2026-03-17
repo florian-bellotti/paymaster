@@ -8,9 +8,6 @@ pub enum Error {
     #[error("privacy requires sponsoring")]
     PrivacyRequiresSponsoring,
 
-    #[error("invoke action not allowed in gasless private transactions")]
-    InvokeActionNotAllowed,
-
     #[error("missing fee TransferTo action for an accepted recipient")]
     MissingFeeTransferTo,
 

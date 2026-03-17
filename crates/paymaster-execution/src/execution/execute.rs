@@ -1,12 +1,10 @@
 use paymaster_prices::math::convert_strk_to_token;
 use paymaster_starknet::transaction::{
-    has_invoke_action, parse_server_actions, CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder,
-    ServerAction, TokenTransfer,
+    parse_server_actions, CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder, ServerAction, TokenTransfer,
 };
 use paymaster_starknet::Signature;
 use starknet::core::types::{Call, Felt, InvokeTransactionResult, TypedData};
 use starknet::macros::selector;
-use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::execution::deploy::DeploymentParameters;
@@ -139,24 +137,17 @@ impl ExecutablePrivateInvokeParameters {
     }
 
     fn find_gas_token_transfer(&self, forwarder: Felt) -> Result<TokenTransfer, Error> {
-        let actions = parse_server_actions(&self.apply_actions_call.calldata)
-            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
+        let actions = parse_server_actions(&self.apply_actions_call.calldata).map_err(|e| Error::CalldataParsing(e.to_string()))?;
 
         let (transfer_token, transfer_amount) = actions
             .iter()
             .find_map(|action| match action {
-                ServerAction::TransferTo { to_addr, token, amount } if *to_addr == forwarder => {
-                    Some((*token, *amount))
-                }
+                ServerAction::TransferTo { to_addr, token, amount } if *to_addr == forwarder => Some((*token, *amount)),
                 _ => None,
             })
             .ok_or(Error::MissingFeeTransferTo)?;
 
-        Ok(TokenTransfer::new(
-            transfer_token,
-            forwarder,
-            Felt::from(transfer_amount)
-        ))
+        Ok(TokenTransfer::new(transfer_token, forwarder, Felt::from(transfer_amount)))
     }
 }
 
@@ -224,11 +215,11 @@ pub struct ExecutableTransaction {
     /// Execution parameters which should come out from the response of the [`buildTransaction`] endpoint
     pub parameters: ExecutionParameters,
 
-    /// Whitelisted privacy pool contract addresses
-    pub privacy_pools: HashSet<Felt>,
+    /// Whitelisted privacy pool contract address
+    pub privacy_pool: Felt,
 
     /// Pool's collect_fee cost in STRK, charged on top of gas for private transactions
-    pub pool_collect_fee_amount: u128,
+    pub privacy_pool_fee_amount: u128,
 }
 
 impl ExecutableTransaction {
@@ -264,9 +255,7 @@ impl ExecutableTransaction {
 
     pub async fn estimate_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
         match &self.transaction {
-            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => {
-                self.estimate_private_transaction(client, private_invoke).await
-            }
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => self.estimate_private_transaction(client, private_invoke).await,
             _ => self.estimate_standard_transaction(client).await,
         }
     }
@@ -309,12 +298,14 @@ impl ExecutableTransaction {
 
         let calls = self.build_private_calls(private_invoke, &transfer)?;
 
-        let estimated_calls = client.estimate_for_private(&calls, self.parameters.tip(), &private_invoke.proof_data).await?;
+        let estimated_calls = client
+            .estimate_for_private(&calls, self.parameters.tip(), &private_invoke.proof_data)
+            .await?;
         let fee_estimate = estimated_calls.estimate();
 
         let gas_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
         let gas_estimate = fee_estimate.update_overall_fee(gas_fee_in_strk);
-        let required_fee_in_strk = gas_fee_in_strk + Felt::from(self.pool_collect_fee_amount);
+        let required_fee_in_strk = gas_fee_in_strk + Felt::from(self.privacy_pool_fee_amount);
 
         let token_price = client.price.fetch_token(transfer.token()).await?;
         let required_fee_in_token = convert_strk_to_token(&token_price, required_fee_in_strk, true)?;
@@ -358,36 +349,38 @@ impl ExecutableTransaction {
         Calls::new(calls)
     }
 
-    /// Build calls for a private sponsored transaction using `execute_sponsored_calls`
-    fn build_private_sponsored_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, sponsor_metadata: Vec<Felt>) -> Result<Calls, Error> {
+    /// Validate and build the inner calls for a private transaction (optional execute_from_outside + apply_actions)
+    fn build_private_inner_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters) -> Result<Vec<Call>, Error> {
         let apply_call = &private_invoke.apply_actions_call;
 
-        if !self.privacy_pools.contains(&apply_call.to) {
+        if self.privacy_pool != apply_call.to {
             return Err(Error::PrivacyPoolNotWhitelisted);
         }
         if apply_call.selector != selector!("apply_actions") {
             return Err(Error::InvalidApplyActionsSelector);
         }
 
-        // Parse and validate ServerActions — reject Invoke actions (security)
-        let actions = parse_server_actions(&apply_call.calldata)
-            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
-        if has_invoke_action(&actions) {
-            return Err(Error::InvokeActionNotAllowed);
-        }
+        let execute_call = private_invoke
+            .message
+            .as_ref()
+            .zip(private_invoke.user.as_ref())
+            .zip(private_invoke.signature.as_ref())
+            .map(|((message, user), signature)| message.to_call(*user, signature));
 
-        let mut all_calls: Vec<Call> = vec![];
+        let mut calls = Vec::new();
+        calls.extend(execute_call);
+        calls.push(apply_call.clone());
+        Ok(calls)
+    }
 
-        if let (Some(ref message), Some(ref user), Some(ref signature)) = (&private_invoke.message, &private_invoke.user, &private_invoke.signature) {
-            all_calls.push(message.to_call(*user, signature));
-        }
-
-        all_calls.push(apply_call.clone());
+    /// Build calls for a private sponsored transaction using `execute_sponsored_calls`
+    fn build_private_sponsored_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, sponsor_metadata: Vec<Felt>) -> Result<Calls, Error> {
+        let inner_calls = self.build_private_inner_calls(private_invoke)?;
 
         let forwarder_call = Call {
             to: self.forwarder,
             selector: selector!("execute_sponsored_calls"),
-            calldata: CalldataBuilder::new().encode(&all_calls).encode(&sponsor_metadata).build(),
+            calldata: CalldataBuilder::new().encode(&inner_calls).encode(&sponsor_metadata).build(),
         };
 
         Ok(Calls::new(vec![forwarder_call]))
@@ -395,35 +388,13 @@ impl ExecutableTransaction {
 
     /// Build calls for a gasless private transaction using `execute_calls`
     fn build_private_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, transfer: &TokenTransfer) -> Result<Calls, Error> {
-        let apply_call = &private_invoke.apply_actions_call;
-
-        if !self.privacy_pools.contains(&apply_call.to) {
-            return Err(Error::PrivacyPoolNotWhitelisted);
-        }
-        if apply_call.selector != selector!("apply_actions") {
-            return Err(Error::InvalidApplyActionsSelector);
-        }
-
-        // Parse and validate ServerActions — reject Invoke actions (security)
-        let actions = parse_server_actions(&apply_call.calldata)
-            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
-        if has_invoke_action(&actions) {
-            return Err(Error::InvokeActionNotAllowed);
-        }
-
-        let mut all_calls: Vec<Call> = vec![];
-
-        if let (Some(ref message), Some(ref user), Some(ref signature)) = (&private_invoke.message, &private_invoke.user, &private_invoke.signature) {
-            all_calls.push(message.to_call(*user, signature));
-        }
-
-        all_calls.push(apply_call.clone());
+        let inner_calls = self.build_private_inner_calls(private_invoke)?;
 
         let forwarder_call = Call {
             to: self.forwarder,
             selector: selector!("execute_calls"),
             calldata: CalldataBuilder::new()
-                .encode(&all_calls)
+                .encode(&inner_calls)
                 .encode(&transfer.token())
                 .encode(&transfer.amount())
                 .encode(&Felt::ZERO)
@@ -509,7 +480,6 @@ mod tests {
     use starknet::core::types::{Call, Felt};
     use starknet::macros::{felt, selector};
     use starknet::signers::SigningKey;
-    use std::collections::HashSet;
 
     #[test]
     fn extract_gas_transfer_from_raw_call_works() {
@@ -712,8 +682,8 @@ mod tests {
                 fee_mode: FeeMode::Sponsored { tip: TipPriority::Normal },
                 time_bounds: None,
             },
-            privacy_pools: HashSet::new(),
-            pool_collect_fee_amount: 0,
+            privacy_pool: Felt::ZERO,
+            privacy_pool_fee_amount: 0,
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -774,8 +744,8 @@ mod tests {
                 },
                 time_bounds: None,
             },
-            privacy_pools: HashSet::new(),
-            pool_collect_fee_amount: 0,
+            privacy_pool: Felt::ZERO,
+            privacy_pool_fee_amount: 0,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -857,8 +827,8 @@ mod tests {
                 },
                 time_bounds: None,
             },
-            privacy_pools: HashSet::new(),
-            pool_collect_fee_amount: 0,
+            privacy_pool: Felt::ZERO,
+            privacy_pool_fee_amount: 0,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();

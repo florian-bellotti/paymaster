@@ -146,7 +146,13 @@ impl Provider for StarknetClient {
 
     /// Gets the value of the storage at the given address and key.
     #[instrument(name = "get_storage_at", skip(self, contract_address, key, block_id, response_flags), fields(contract_address = ?contract_address.as_ref(), key = ?key.as_ref(), block_id = ?block_id.as_ref()))]
-    async fn get_storage_at<A, K, B>(&self, contract_address: A, key: K, block_id: B, response_flags: Option<&[StorageResponseFlag]>) -> Result<GetStorageAtResult, ProviderError>
+    async fn get_storage_at<A, K, B>(
+        &self,
+        contract_address: A,
+        key: K,
+        block_id: B,
+        response_flags: Option<&[StorageResponseFlag]>,
+    ) -> Result<GetStorageAtResult, ProviderError>
     where
         A: AsRef<Felt> + Send + Sync,
         K: AsRef<Felt> + Send + Sync,

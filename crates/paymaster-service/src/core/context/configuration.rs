@@ -45,12 +45,12 @@ pub struct Configuration {
 
     pub forwarder: Felt,
     #[serde(default)]
-    pub privacy_pools: HashSet<Felt>,
+    pub privacy_pool: Felt,
     pub supported_tokens: HashSet<Felt>,
 
     /// Pool's collect_fee cost in STRK (decimal string, e.g. "1000000000000000")
     #[serde(default)]
-    pub pool_collect_fee_amount: Option<String>,
+    pub privacy_pool_fee_amount: Option<String>,
 
     pub max_fee_multiplier: f32,
     pub provider_fee_overhead: f32,

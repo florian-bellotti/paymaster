@@ -44,7 +44,7 @@ impl TryFrom<TransactionParameters> for paymaster_execution::TransactionParamete
                 return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
                     "PrivateInvoke cannot be converted to standard transaction parameters".to_string(),
                 )));
-            }
+            },
         })
     }
 }
@@ -204,11 +204,11 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
             return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
                 "Expected PrivateInvoke transaction".to_string(),
             )));
-        }
+        },
     };
 
     // Validate pool is whitelisted
-    if !ctx.configuration.privacy_pools.contains(&private_invoke.pool_address) {
+    if ctx.configuration.privacy_pool != private_invoke.pool_address {
         return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
             "privacy pool address is not whitelisted".to_string(),
         )));
@@ -226,7 +226,7 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
     let estimated_fee_in_gas_token = paymaster_prices::math::convert_strk_to_token(&token, estimated_fee_in_strk, true)?;
 
     // Add pool collect_fee cost (in STRK) to the total fee
-    let pool_fee = Felt::from(ctx.configuration.pool_collect_fee_amount);
+    let pool_fee = Felt::from(ctx.configuration.privacy_pool_fee_amount);
     let total_fee_in_strk = estimated_fee_in_strk + pool_fee;
 
     let suggested_max_fee_in_strk = ctx.execution.compute_max_fee_in_strk(total_fee_in_strk);

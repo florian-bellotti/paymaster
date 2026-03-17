@@ -16,13 +16,27 @@ pub enum ServerAction {
     /// Variant 3: TransferTo { to_addr: ContractAddress, token: ContractAddress, amount: u128 }
     TransferTo { to_addr: Felt, token: Felt, amount: u128 },
     /// Variant 4: EmitViewingKeySet { user_addr: ContractAddress, public_key: felt252, enc_private_key: (3 felts) }
-    EmitViewingKeySet { user_addr: Felt, public_key: Felt, enc_private_key: [Felt; 3] },
+    EmitViewingKeySet {
+        user_addr: Felt,
+        public_key: Felt,
+        enc_private_key: [Felt; 3],
+    },
     /// Variant 5: EmitWithdrawal { enc_user_addr: EncUserAddr(3 felts), to_addr: ContractAddress, token: ContractAddress, amount: u128 }
-    EmitWithdrawal { enc_user_addr: [Felt; 3], to_addr: Felt, token: Felt, amount: u128 },
+    EmitWithdrawal {
+        enc_user_addr: [Felt; 3],
+        to_addr: Felt,
+        token: Felt,
+        amount: u128,
+    },
     /// Variant 6: EmitDeposit { user_addr: ContractAddress, token: ContractAddress, amount: u128 }
     EmitDeposit { user_addr: Felt, token: Felt, amount: u128 },
     /// Variant 7: EmitOpenNoteCreated { enc_recipient_addr: EncUserAddr(3 felts), depositor: ContractAddress, token: ContractAddress, note_id: felt252 }
-    EmitOpenNoteCreated { enc_recipient_addr: [Felt; 3], depositor: Felt, token: Felt, note_id: Felt },
+    EmitOpenNoteCreated {
+        enc_recipient_addr: [Felt; 3],
+        depositor: Felt,
+        token: Felt,
+        note_id: Felt,
+    },
     /// Variant 8: EmitEncNoteCreated { note_id: felt252, packed_value: felt252 }
     EmitEncNoteCreated { note_id: Felt, packed_value: Felt },
     /// Variant 9: EmitNoteUsed { nullifier: felt252 }
@@ -129,64 +143,81 @@ fn parse_action(cursor: &mut Cursor) -> Result<ServerAction, ServerActionError> 
             let storage_address = cursor.next()?;
             let value = cursor.next_span()?;
             Ok(ServerAction::WriteOnce { storage_address, value })
-        }
+        },
         1 => {
             let recipient_addr = cursor.next()?;
             let enc_channel_info = cursor.next_array::<3>()?;
-            Ok(ServerAction::Append { recipient_addr, enc_channel_info })
-        }
+            Ok(ServerAction::Append {
+                recipient_addr,
+                enc_channel_info,
+            })
+        },
         2 => {
             let from_addr = cursor.next()?;
             let token = cursor.next()?;
             let amount = cursor.next_u128()?;
             Ok(ServerAction::TransferFrom { from_addr, token, amount })
-        }
+        },
         3 => {
             let to_addr = cursor.next()?;
             let token = cursor.next()?;
             let amount = cursor.next_u128()?;
             Ok(ServerAction::TransferTo { to_addr, token, amount })
-        }
+        },
         4 => {
             let user_addr = cursor.next()?;
             let public_key = cursor.next()?;
             let enc_private_key = cursor.next_array::<3>()?;
-            Ok(ServerAction::EmitViewingKeySet { user_addr, public_key, enc_private_key })
-        }
+            Ok(ServerAction::EmitViewingKeySet {
+                user_addr,
+                public_key,
+                enc_private_key,
+            })
+        },
         5 => {
             let enc_user_addr = cursor.next_array::<3>()?;
             let to_addr = cursor.next()?;
             let token = cursor.next()?;
             let amount = cursor.next_u128()?;
-            Ok(ServerAction::EmitWithdrawal { enc_user_addr, to_addr, token, amount })
-        }
+            Ok(ServerAction::EmitWithdrawal {
+                enc_user_addr,
+                to_addr,
+                token,
+                amount,
+            })
+        },
         6 => {
             let user_addr = cursor.next()?;
             let token = cursor.next()?;
             let amount = cursor.next_u128()?;
             Ok(ServerAction::EmitDeposit { user_addr, token, amount })
-        }
+        },
         7 => {
             let enc_recipient_addr = cursor.next_array::<3>()?;
             let depositor = cursor.next()?;
             let token = cursor.next()?;
             let note_id = cursor.next()?;
-            Ok(ServerAction::EmitOpenNoteCreated { enc_recipient_addr, depositor, token, note_id })
-        }
+            Ok(ServerAction::EmitOpenNoteCreated {
+                enc_recipient_addr,
+                depositor,
+                token,
+                note_id,
+            })
+        },
         8 => {
             let note_id = cursor.next()?;
             let packed_value = cursor.next()?;
             Ok(ServerAction::EmitEncNoteCreated { note_id, packed_value })
-        }
+        },
         9 => {
             let nullifier = cursor.next()?;
             Ok(ServerAction::EmitNoteUsed { nullifier })
-        }
+        },
         10 => {
             let contract_address = cursor.next()?;
             let calldata = cursor.next_span()?;
             Ok(ServerAction::Invoke { contract_address, calldata })
-        }
+        },
         _ => Err(ServerActionError::UnknownVariant(variant)),
     }
 }
@@ -226,7 +257,9 @@ pub fn parse_server_actions(calldata: &[Felt]) -> Result<Vec<ServerAction>, Serv
 
 /// Find the first `TransferTo` action where `to_addr` is in the accepted recipients set.
 pub fn find_transfer_to<'a>(actions: &'a [ServerAction], accepted_recipients: &HashSet<Felt>) -> Option<&'a ServerAction> {
-    actions.iter().find(|action| matches!(action, ServerAction::TransferTo { to_addr, .. } if accepted_recipients.contains(to_addr)))
+    actions
+        .iter()
+        .find(|action| matches!(action, ServerAction::TransferTo { to_addr, .. } if accepted_recipients.contains(to_addr)))
 }
 
 /// Check if any `Invoke` action (variant 10) is present — security risk.
@@ -242,10 +275,10 @@ mod tests {
     #[test]
     fn parse_transfer_to() {
         let calldata = vec![
-            Felt::ONE,    // 1 action
-            Felt::THREE,  // variant 3 = TransferTo
-            felt!("0xABC"), // to_addr
-            felt!("0xDEF"), // token
+            Felt::ONE,           // 1 action
+            Felt::THREE,         // variant 3 = TransferTo
+            felt!("0xABC"),      // to_addr
+            felt!("0xDEF"),      // token
             Felt::from(1000u64), // amount (u128 as single felt)
         ];
         let actions = parse_server_actions(&calldata).unwrap();
@@ -263,9 +296,9 @@ mod tests {
     #[test]
     fn parse_write_once_variable_length() {
         let calldata = vec![
-            Felt::ONE,       // 1 action
-            Felt::ZERO,      // variant 0 = WriteOnce
-            felt!("0x123"),  // storage_address
+            Felt::ONE,        // 1 action
+            Felt::ZERO,       // variant 0 = WriteOnce
+            felt!("0x123"),   // storage_address
             Felt::from(3u64), // span length = 3
             felt!("0xA"),
             felt!("0xB"),
@@ -285,10 +318,10 @@ mod tests {
     #[test]
     fn parse_invoke_variable_length() {
         let calldata = vec![
-            Felt::ONE,        // 1 action
+            Felt::ONE,         // 1 action
             Felt::from(10u64), // variant 10 = Invoke
-            felt!("0x456"),   // contract_address
-            Felt::TWO,        // span length = 2
+            felt!("0x456"),    // contract_address
+            Felt::TWO,         // span length = 2
             felt!("0xD"),
             felt!("0xE"),
         ];
@@ -306,25 +339,28 @@ mod tests {
     #[test]
     fn parse_emit_enc_note_created() {
         let calldata = vec![
-            Felt::ONE,         // 1 action
-            Felt::from(8u64),  // variant 8 = EmitEncNoteCreated
-            felt!("0xABC"),    // note_id
-            felt!("0xDEF"),    // packed_value
+            Felt::ONE,        // 1 action
+            Felt::from(8u64), // variant 8 = EmitEncNoteCreated
+            felt!("0xABC"),   // note_id
+            felt!("0xDEF"),   // packed_value
         ];
         let actions = parse_server_actions(&calldata).unwrap();
         assert_eq!(actions.len(), 1);
         assert_eq!(
             actions[0],
-            ServerAction::EmitEncNoteCreated { note_id: felt!("0xABC"), packed_value: felt!("0xDEF") }
+            ServerAction::EmitEncNoteCreated {
+                note_id: felt!("0xABC"),
+                packed_value: felt!("0xDEF")
+            }
         );
     }
 
     #[test]
     fn parse_emit_note_used() {
         let calldata = vec![
-            Felt::ONE,         // 1 action
-            Felt::from(9u64),  // variant 9 = EmitNoteUsed
-            felt!("0x789"),    // nullifier
+            Felt::ONE,        // 1 action
+            Felt::from(9u64), // variant 9 = EmitNoteUsed
+            felt!("0x789"),   // nullifier
         ];
         let actions = parse_server_actions(&calldata).unwrap();
         assert_eq!(actions.len(), 1);
@@ -334,13 +370,13 @@ mod tests {
     #[test]
     fn parse_emit_withdrawal() {
         let calldata = vec![
-            Felt::ONE,         // 1 action
-            Felt::from(5u64),  // variant 5 = EmitWithdrawal
-            felt!("0x11"),     // enc_user_addr[0] (auditor_public_key)
-            felt!("0x22"),     // enc_user_addr[1] (ephemeral_pubkey)
-            felt!("0x33"),     // enc_user_addr[2] (enc_user_addr)
-            felt!("0xABC"),    // to_addr
-            felt!("0xDEF"),    // token
+            Felt::ONE,          // 1 action
+            Felt::from(5u64),   // variant 5 = EmitWithdrawal
+            felt!("0x11"),      // enc_user_addr[0] (auditor_public_key)
+            felt!("0x22"),      // enc_user_addr[1] (ephemeral_pubkey)
+            felt!("0x33"),      // enc_user_addr[2] (enc_user_addr)
+            felt!("0xABC"),     // to_addr
+            felt!("0xDEF"),     // token
             Felt::from(500u64), // amount
         ];
         let actions = parse_server_actions(&calldata).unwrap();
@@ -360,25 +396,25 @@ mod tests {
     fn parse_multiple_actions() {
         // Simulate a Withdraw: TransferTo + EmitWithdrawal + WriteOnce (nullifier)
         let calldata = vec![
-            Felt::from(3u64),  // 3 actions
+            Felt::from(3u64), // 3 actions
             // Action 0: TransferTo (variant 3)
             Felt::THREE,
-            felt!("0xFEE"),    // to_addr (fee recipient)
-            felt!("0x111"),    // token
+            felt!("0xFEE"),     // to_addr (fee recipient)
+            felt!("0x111"),     // token
             Felt::from(100u64), // amount
             // Action 1: EmitWithdrawal (variant 5)
             Felt::from(5u64),
-            felt!("0xE1"),     // enc_user_addr[0]
-            felt!("0xE2"),     // enc_user_addr[1]
-            felt!("0xE3"),     // enc_user_addr[2]
-            felt!("0xFEE"),    // to_addr
-            felt!("0x111"),    // token
+            felt!("0xE1"),      // enc_user_addr[0]
+            felt!("0xE2"),      // enc_user_addr[1]
+            felt!("0xE3"),      // enc_user_addr[2]
+            felt!("0xFEE"),     // to_addr
+            felt!("0x111"),     // token
             Felt::from(100u64), // amount
             // Action 2: WriteOnce (variant 0)
             Felt::ZERO,
-            felt!("0x999"),    // storage_address
-            Felt::ONE,         // span length = 1
-            felt!("0xDA1A"),   // value
+            felt!("0x999"),  // storage_address
+            Felt::ONE,       // span length = 1
+            felt!("0xDA1A"), // value
         ];
         let actions = parse_server_actions(&calldata).unwrap();
         assert_eq!(actions.len(), 3);
@@ -390,9 +426,21 @@ mod tests {
     #[test]
     fn find_transfer_to_works() {
         let actions = vec![
-            ServerAction::WriteOnce { storage_address: Felt::ZERO, value: vec![] },
-            ServerAction::TransferTo { to_addr: felt!("0xABC"), token: felt!("0x111"), amount: 100 },
-            ServerAction::EmitWithdrawal { enc_user_addr: [Felt::ZERO; 3], to_addr: felt!("0xABC"), token: felt!("0x111"), amount: 100 },
+            ServerAction::WriteOnce {
+                storage_address: Felt::ZERO,
+                value: vec![],
+            },
+            ServerAction::TransferTo {
+                to_addr: felt!("0xABC"),
+                token: felt!("0x111"),
+                amount: 100,
+            },
+            ServerAction::EmitWithdrawal {
+                enc_user_addr: [Felt::ZERO; 3],
+                to_addr: felt!("0xABC"),
+                token: felt!("0x111"),
+                amount: 100,
+            },
         ];
         let mut recipients = HashSet::new();
         recipients.insert(felt!("0xABC"));
@@ -404,9 +452,11 @@ mod tests {
 
     #[test]
     fn find_transfer_to_returns_none_if_not_in_set() {
-        let actions = vec![
-            ServerAction::TransferTo { to_addr: felt!("0xABC"), token: felt!("0x111"), amount: 100 },
-        ];
+        let actions = vec![ServerAction::TransferTo {
+            to_addr: felt!("0xABC"),
+            token: felt!("0x111"),
+            amount: 100,
+        }];
         let mut recipients = HashSet::new();
         recipients.insert(felt!("0xDEF"));
 
@@ -416,8 +466,15 @@ mod tests {
     #[test]
     fn has_invoke_action_detects_invoke() {
         let actions = vec![
-            ServerAction::TransferTo { to_addr: Felt::ZERO, token: Felt::ZERO, amount: 0 },
-            ServerAction::Invoke { contract_address: felt!("0x123"), calldata: vec![] },
+            ServerAction::TransferTo {
+                to_addr: Felt::ZERO,
+                token: Felt::ZERO,
+                amount: 0,
+            },
+            ServerAction::Invoke {
+                contract_address: felt!("0x123"),
+                calldata: vec![],
+            },
         ];
         assert!(has_invoke_action(&actions));
     }
@@ -425,7 +482,11 @@ mod tests {
     #[test]
     fn has_invoke_action_returns_false_when_absent() {
         let actions = vec![
-            ServerAction::TransferTo { to_addr: Felt::ZERO, token: Felt::ZERO, amount: 0 },
+            ServerAction::TransferTo {
+                to_addr: Felt::ZERO,
+                token: Felt::ZERO,
+                amount: 0,
+            },
             ServerAction::EmitNoteUsed { nullifier: Felt::ZERO },
         ];
         assert!(!has_invoke_action(&actions));
@@ -439,10 +500,10 @@ mod tests {
     #[test]
     fn error_on_truncated_data() {
         let calldata = vec![
-            Felt::ONE,    // 1 action expected
-            Felt::THREE,  // variant 3 = TransferTo
+            Felt::ONE,   // 1 action expected
+            Felt::THREE, // variant 3 = TransferTo
             felt!("0xABC"), // to_addr
-            // missing token and amount
+                         // missing token and amount
         ];
         assert!(parse_server_actions(&calldata).is_err());
     }
@@ -450,9 +511,9 @@ mod tests {
     #[test]
     fn error_on_invalid_span_length() {
         let calldata = vec![
-            Felt::ONE,        // 1 action
-            Felt::ZERO,       // variant 0 = WriteOnce
-            felt!("0x123"),   // storage_address
+            Felt::ONE,          // 1 action
+            Felt::ZERO,         // variant 0 = WriteOnce
+            felt!("0x123"),     // storage_address
             Felt::from(999u64), // span length = 999 (way more than remaining)
         ];
         assert_eq!(parse_server_actions(&calldata), Err(ServerActionError::InvalidSpanLength));
@@ -461,8 +522,8 @@ mod tests {
     #[test]
     fn error_on_unknown_variant() {
         let calldata = vec![
-            Felt::ONE,          // 1 action
-            Felt::from(99u64),  // unknown variant
+            Felt::ONE,         // 1 action
+            Felt::from(99u64), // unknown variant
         ];
         assert_eq!(parse_server_actions(&calldata), Err(ServerActionError::UnknownVariant(99)));
     }
@@ -471,40 +532,47 @@ mod tests {
     fn parse_all_fixed_size_variants() {
         // Append (variant 1): 4 felts
         let calldata = vec![
-            Felt::ONE, Felt::ONE, // variant 1
-            felt!("0x1"), felt!("0x2"), felt!("0x3"), felt!("0x4"),
+            Felt::ONE,
+            Felt::ONE, // variant 1
+            felt!("0x1"),
+            felt!("0x2"),
+            felt!("0x3"),
+            felt!("0x4"),
         ];
         let actions = parse_server_actions(&calldata).unwrap();
         assert!(matches!(&actions[0], ServerAction::Append { .. }));
 
         // TransferFrom (variant 2): 3 felts
         let calldata = vec![
-            Felt::ONE, Felt::TWO, // variant 2
-            felt!("0x1"), felt!("0x2"), Felt::from(50u64),
+            Felt::ONE,
+            Felt::TWO, // variant 2
+            felt!("0x1"),
+            felt!("0x2"),
+            Felt::from(50u64),
         ];
         let actions = parse_server_actions(&calldata).unwrap();
         assert!(matches!(&actions[0], ServerAction::TransferFrom { amount: 50, .. }));
 
         // EmitViewingKeySet (variant 4): 5 felts
-        let calldata = vec![
-            Felt::ONE, Felt::from(4u64),
-            felt!("0x1"), felt!("0x2"), felt!("0x3"), felt!("0x4"), felt!("0x5"),
-        ];
+        let calldata = vec![Felt::ONE, Felt::from(4u64), felt!("0x1"), felt!("0x2"), felt!("0x3"), felt!("0x4"), felt!("0x5")];
         let actions = parse_server_actions(&calldata).unwrap();
         assert!(matches!(&actions[0], ServerAction::EmitViewingKeySet { .. }));
 
         // EmitDeposit (variant 6): 3 felts
-        let calldata = vec![
-            Felt::ONE, Felt::from(6u64),
-            felt!("0x1"), felt!("0x2"), Felt::from(75u64),
-        ];
+        let calldata = vec![Felt::ONE, Felt::from(6u64), felt!("0x1"), felt!("0x2"), Felt::from(75u64)];
         let actions = parse_server_actions(&calldata).unwrap();
         assert!(matches!(&actions[0], ServerAction::EmitDeposit { amount: 75, .. }));
 
         // EmitOpenNoteCreated (variant 7): 6 felts (3 for EncUserAddr + depositor + token + note_id)
         let calldata = vec![
-            Felt::ONE, Felt::from(7u64),
-            felt!("0x1"), felt!("0x2"), felt!("0x3"), felt!("0x4"), felt!("0x5"), felt!("0x6"),
+            Felt::ONE,
+            Felt::from(7u64),
+            felt!("0x1"),
+            felt!("0x2"),
+            felt!("0x3"),
+            felt!("0x4"),
+            felt!("0x5"),
+            felt!("0x6"),
         ];
         let actions = parse_server_actions(&calldata).unwrap();
         assert!(matches!(&actions[0], ServerAction::EmitOpenNoteCreated { .. }));

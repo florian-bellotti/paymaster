@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use paymaster_execution::ExecutableTransaction;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -70,8 +68,8 @@ pub async fn execute_direct_endpoint(ctx: &RequestContext<'_>, request: ExecuteD
         gas_tank_address,
         parameters: request.parameters.into(),
         transaction: request.transaction.into(),
-        privacy_pools: HashSet::new(),
-        pool_collect_fee_amount: 0,
+        privacy_pool: Felt::ZERO,
+        privacy_pool_fee_amount: 0,
     };
 
     let estimated_transaction = if transaction.parameters.fee_mode().is_sponsored() {

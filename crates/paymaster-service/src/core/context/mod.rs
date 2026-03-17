@@ -52,12 +52,14 @@ impl Into<paymaster_rpc::Configuration> for Context {
             rpc: self.configuration.rpc.clone(),
 
             forwarder: self.configuration.forwarder,
-            privacy_pools: self.configuration.privacy_pools.clone(),
+            privacy_pool: self.configuration.privacy_pool,
             gas_tank: self.configuration.gas_tank,
 
             supported_tokens: self.configuration.supported_tokens.clone(),
 
-            pool_collect_fee_amount: self.configuration.pool_collect_fee_amount
+            privacy_pool_fee_amount: self
+                .configuration
+                .privacy_pool_fee_amount
                 .as_deref()
                 .and_then(|s| s.parse::<u128>().ok())
                 .unwrap_or(0),

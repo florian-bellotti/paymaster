@@ -17,8 +17,8 @@ pub use context::{Configuration, RPCConfiguration};
 mod endpoint;
 use crate::endpoint::execute_raw::{ExecuteDirectRequest, ExecuteDirectResponse};
 pub use endpoint::build::{
-    BuildTransactionRequest, BuildTransactionResponse, DeployAndInvokeTransaction, DeployTransaction, FeeAction, FeeEstimate, InvokeParameters,
-    InvokeTransaction, PrivateInvokeParameters, PrivateInvokeTransaction, TransactionParameters,
+    BuildTransactionRequest, BuildTransactionResponse, DeployAndInvokeTransaction, DeployTransaction, FeeAction, FeeEstimate, InvokeParameters, InvokeTransaction,
+    PrivateInvokeParameters, PrivateInvokeTransaction, TransactionParameters,
 };
 pub use endpoint::common::{DeploymentParameters, ExecutionParameters, FeeMode, TimeBounds};
 pub use endpoint::execute::{ExecutableInvokeParameters, ExecutablePrivateInvokeParameters, ExecutableTransactionParameters, ExecuteRequest, ExecuteResponse};
@@ -91,9 +91,6 @@ pub enum Error {
     #[error("privacy proof missing")]
     PrivacyProofMissing,
 
-    #[error("invoke action not allowed in gasless private transactions")]
-    InvokeActionNotAllowed,
-
     #[error("missing fee payment in private transaction calldata")]
     MissingFeeTransferTo,
 
@@ -132,7 +129,6 @@ impl From<PaymasterExecutionError> for Error {
     fn from(value: PaymasterExecutionError) -> Self {
         match value {
             PaymasterExecutionError::PrivacyRequiresSponsoring => Self::PrivacyRequiresSponsoring,
-            PaymasterExecutionError::InvokeActionNotAllowed => Self::InvokeActionNotAllowed,
             PaymasterExecutionError::MissingFeeTransferTo => Self::MissingFeeTransferTo,
             PaymasterExecutionError::CalldataParsing(_) => Self::CalldataParsing,
             PaymasterExecutionError::MaxAmountTooLow(_) => Self::MaxAmountTooLow,
@@ -158,7 +154,6 @@ impl<'a> From<Error> for ErrorObject<'a> {
             Error::InvalidDeploymentData => ErrorObject::borrowed(158, "An error occurred (INVALID_DEPLOYMENT_DATA)", None),
             Error::PrivacyRequiresSponsoring => ErrorObject::borrowed(159, "An error occurred (PRIVACY_REQUIRES_SPONSORING)", None),
             Error::PrivacyProofMissing => ErrorObject::borrowed(161, "An error occurred (PRIVACY_PROOF_MISSING)", None),
-            Error::InvokeActionNotAllowed => ErrorObject::borrowed(164, "An error occurred (INVOKE_ACTION_NOT_ALLOWED)", None),
             Error::MissingFeeTransferTo => ErrorObject::borrowed(165, "An error occurred (MISSING_FEE_TRANSFER_TO)", None),
             Error::CalldataParsing => ErrorObject::borrowed(166, "An error occurred (CALLDATA_PARSING)", None),
             Error::Execution(e) => ErrorObject::owned(156, "An error occurred (TRANSACTION_EXECUTION_ERROR)", Some(ExecutionError { execution_error: e })),

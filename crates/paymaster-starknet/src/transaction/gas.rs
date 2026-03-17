@@ -47,8 +47,7 @@ impl TransactionGasEstimate {
         let l2_gas_price = crate::math::felt_to_u128(gas_prices.l2_gas_price)?;
         let l1_data_gas_price = crate::math::felt_to_u128(gas_prices.l1_data_gas_price)?;
 
-        let overall_fee =
-            L1_GAS_CONSUMED as u128 * l1_gas_price + L2_GAS_CONSUMED as u128 * l2_gas_price + L1_DATA_GAS_CONSUMED as u128 * l1_data_gas_price;
+        let overall_fee = L1_GAS_CONSUMED as u128 * l1_gas_price + L2_GAS_CONSUMED as u128 * l2_gas_price + L1_DATA_GAS_CONSUMED as u128 * l1_data_gas_price;
 
         Ok(Self {
             overall_fee,
@@ -69,8 +68,8 @@ impl TransactionGasEstimate {
         // The new overall fee includes validation headers. The validation overhead only applies to l2_gas_consumed
         let overall_fee_u128: u128 = overall_fee.try_into().unwrap_or(self.overall_fee);
         let l2_gas_consumed = if self.l2_gas_consumed != 0 {
-            ((overall_fee_u128 - (self.l1_gas_consumed as u128 * self.l1_gas_price + self.l1_data_gas_consumed as u128 * self.l1_data_gas_price))
-                / self.l2_gas_price) as u64
+            ((overall_fee_u128 - (self.l1_gas_consumed as u128 * self.l1_gas_price + self.l1_data_gas_consumed as u128 * self.l1_data_gas_price)) / self.l2_gas_price)
+                as u64
         } else {
             self.l2_gas_consumed
         };
@@ -125,4 +124,3 @@ impl TransactionGasEstimate {
         )
     }
 }
-
