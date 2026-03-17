@@ -16,10 +16,6 @@ pub struct Configuration {
     pub privacy_pools: HashSet<Felt>,
     pub supported_tokens: HashSet<Felt>,
 
-    /// Address returned in build response fee_action for gasless private transactions
-    pub fee_recipient: Felt,
-    /// Set of accepted fee recipient addresses (for rotation support)
-    pub accepted_fee_recipients: HashSet<Felt>,
     /// Pool's collect_fee cost in STRK (from pool's get_fee_amount())
     pub pool_collect_fee_amount: u128,
 

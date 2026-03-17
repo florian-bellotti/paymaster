@@ -205,9 +205,6 @@ pub struct ExecutableTransaction {
 
     /// Whitelisted privacy pool contract addresses
     pub privacy_pools: HashSet<Felt>,
-
-    /// Accepted fee recipient addresses for gasless private transactions
-    pub accepted_fee_recipients: HashSet<Felt>,
 }
 
 impl ExecutableTransaction {
@@ -286,12 +283,12 @@ impl ExecutableTransaction {
         let actions = parse_server_actions(&private_invoke.apply_actions_call.calldata)
             .map_err(|e| Error::CalldataParsing(e.to_string()))?;
 
-        // 2. Find fee TransferTo to an accepted recipient
+        // 2. Find fee TransferTo to gas_tank_address
         let mut fee_transfer: Option<(Felt, u128)> = None;
         for action in &actions {
             if fee_transfer.is_none() {
                 if let ServerAction::TransferTo { to_addr, token, amount } = action {
-                    if self.accepted_fee_recipients.contains(to_addr) {
+                    if *to_addr == self.gas_tank_address {
                         fee_transfer = Some((*token, *amount));
                     }
                 }
@@ -671,7 +668,6 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
-            accepted_fee_recipients: HashSet::new(),
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -733,7 +729,6 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
-            accepted_fee_recipients: HashSet::new(),
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -816,7 +811,6 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
-            accepted_fee_recipients: HashSet::new(),
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();

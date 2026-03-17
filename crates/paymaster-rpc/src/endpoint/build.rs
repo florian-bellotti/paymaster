@@ -244,7 +244,7 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
             suggested_max_fee_in_gas_token,
         },
         fee_action: FeeAction {
-            recipient: ctx.configuration.fee_recipient,
+            recipient: ctx.configuration.gas_tank.address,
             token: gas_token,
             amount: suggested_max_fee_in_gas_token,
         },

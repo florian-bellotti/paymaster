@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::core::context::configuration::{Configuration, Profile};
 use crate::core::context::environment::VariablesResolver;
 use crate::core::Error;
@@ -59,12 +57,6 @@ impl Into<paymaster_rpc::Configuration> for Context {
 
             supported_tokens: self.configuration.supported_tokens.clone(),
 
-            fee_recipient: self.configuration.fee_recipient.unwrap_or(self.configuration.gas_tank.address),
-            accepted_fee_recipients: if self.configuration.accepted_fee_recipients.is_empty() {
-                HashSet::from([self.configuration.gas_tank.address])
-            } else {
-                self.configuration.accepted_fee_recipients.clone()
-            },
             pool_collect_fee_amount: self.configuration.pool_collect_fee_amount
                 .as_deref()
                 .and_then(|s| s.parse::<u128>().ok())

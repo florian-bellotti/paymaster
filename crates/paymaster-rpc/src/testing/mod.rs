@@ -82,8 +82,6 @@ impl TestEnvironment {
             supported_tokens: HashSet::from([Token::ETH_ADDRESS, Token::usdc(starknet.chain_id()).address]),
             forwarder: StarknetTestEnvironment::FORWARDER,
             privacy_pools: HashSet::new(),
-            fee_recipient: StarknetTestEnvironment::FORWARDER,
-            accepted_fee_recipients: HashSet::from([StarknetTestEnvironment::FORWARDER]),
             pool_collect_fee_amount: 0,
             gas_tank: StarknetAccountConfiguration {
                 address: StarknetTestEnvironment::FORWARDER,

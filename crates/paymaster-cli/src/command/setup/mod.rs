@@ -244,8 +244,6 @@ pub async fn deploy_paymaster_core(params: SetupParameters, skip_user_confirmati
         supported_tokens,
         forwarder: forwarder_deployment.address,
         privacy_pools: HashSet::new(),
-        fee_recipient: None,
-        accepted_fee_recipients: HashSet::new(),
         pool_collect_fee_amount: None,
         estimate_account: StarknetAccountConfiguration {
             address: estimate_account_address,
