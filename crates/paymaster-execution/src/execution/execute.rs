@@ -137,6 +137,27 @@ impl ExecutablePrivateInvokeParameters {
         self.proof_data.hash(&mut hasher);
         hasher.finish()
     }
+
+    fn find_gas_token_transfer(&self, forwarder: Felt) -> Result<TokenTransfer, Error> {
+        let actions = parse_server_actions(&self.apply_actions_call.calldata)
+            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
+
+        let (transfer_token, transfer_amount) = actions
+            .iter()
+            .find_map(|action| match action {
+                ServerAction::TransferTo { to_addr, token, amount } if *to_addr == forwarder => {
+                    Some((*token, *amount))
+                }
+                _ => None,
+            })
+            .ok_or(Error::MissingFeeTransferTo)?;
+
+        Ok(TokenTransfer::new(
+            transfer_token,
+            forwarder,
+            Felt::from(transfer_amount)
+        ))
+    }
 }
 
 #[derive(Debug, Hash)]
@@ -241,7 +262,7 @@ impl ExecutableTransaction {
     pub async fn estimate_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
         match &self.transaction {
             ExecutableTransactionParameters::PrivateInvoke { private_invoke } => {
-                self.estimate_gasless_private(client, private_invoke).await
+                self.estimate_private_transaction(client, private_invoke).await
             }
             _ => self.estimate_standard_transaction(client).await,
         }
@@ -277,46 +298,32 @@ impl ExecutableTransaction {
         Ok(EstimatedExecutableTransaction(estimated_final_calls))
     }
 
-    /// Gasless path for private transactions: verify fee payment via TransferTo in calldata
-    async fn estimate_gasless_private(&self, client: &Client, private_invoke: &ExecutablePrivateInvokeParameters) -> Result<EstimatedExecutableTransaction, Error> {
-        // 1. Parse ServerActions from apply_actions_call calldata
-        let actions = parse_server_actions(&private_invoke.apply_actions_call.calldata)
-            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
+    async fn estimate_private_transaction(&self, client: &Client, private_invoke: &ExecutablePrivateInvokeParameters) -> Result<EstimatedExecutableTransaction, Error> {
+        let transfer = match &self.transaction {
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke, .. } => private_invoke.find_gas_token_transfer(self.forwarder)?,
+            _ => return Err(Error::MissingFeeTransferTo),
+        };
 
-        // 2. Find fee TransferTo to gas_tank_address
-        let mut fee_transfer: Option<(Felt, u128)> = None;
-        for action in &actions {
-            if fee_transfer.is_none() {
-                if let ServerAction::TransferTo { to_addr, token, amount } = action {
-                    if *to_addr == self.gas_tank_address {
-                        fee_transfer = Some((*token, *amount));
-                    }
-                }
-            }
-        }
-        let (transfer_token, transfer_amount) = fee_transfer.ok_or(Error::MissingFeeTransferTo)?;
+        let calls = self.build_private_calls(private_invoke, &transfer)?;
 
-        // 4. Build calls via existing forwarder wrapping (same as sponsored path)
-        let calls = self.build_private_sponsored_calls(private_invoke, vec![])?;
-
-        // 5. Estimate gas using block gas prices
+        // Estimate gas using block gas prices
         let estimated = client
             .estimate_for_private(&calls, self.parameters.tip(), &private_invoke.proof_data)
             .await?;
 
-        // 6. Verify the fee TransferTo covers the estimated cost
+        // Verify the fee TransferTo covers the estimated cost
         let fee_estimate = estimated.estimate();
         let paid_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
 
-        let token_price = client.price.fetch_token(transfer_token).await?;
+        let token_price = client.price.fetch_token(transfer.token()).await?;
         let paid_fee_in_token = convert_strk_to_token(&token_price, paid_fee_in_strk, true)?;
 
-        let transfer_amount_felt = Felt::from(transfer_amount);
+        let transfer_amount_felt = transfer.amount();
         if paid_fee_in_token > transfer_amount_felt {
             return Err(Error::MaxAmountTooLow(paid_fee_in_token.to_hex_string()));
         }
 
-        // 7. Finalize with the updated fee estimate
+        // Finalize with the updated fee estimate
         let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
         let final_calls = calls.with_estimate_and_proof(final_fee_estimate, private_invoke.proof_data.clone());
 
@@ -383,6 +390,46 @@ impl ExecutableTransaction {
             to: self.forwarder,
             selector: selector!("execute_sponsored_calls"),
             calldata: CalldataBuilder::new().encode(&all_calls).encode(&sponsor_metadata).build(),
+        };
+
+        Ok(Calls::new(vec![forwarder_call]))
+    }
+
+    /// Build calls for a gasless private transaction using `execute_calls`
+    fn build_private_calls(&self, private_invoke: &ExecutablePrivateInvokeParameters, transfer: &TokenTransfer) -> Result<Calls, Error> {
+        let apply_call = &private_invoke.apply_actions_call;
+
+        if !self.privacy_pools.contains(&apply_call.to) {
+            return Err(Error::PrivacyPoolNotWhitelisted);
+        }
+        if apply_call.selector != selector!("apply_actions") {
+            return Err(Error::InvalidApplyActionsSelector);
+        }
+
+        // Parse and validate ServerActions — reject Invoke actions (security)
+        let actions = parse_server_actions(&apply_call.calldata)
+            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
+        if has_invoke_action(&actions) {
+            return Err(Error::InvokeActionNotAllowed);
+        }
+
+        let mut all_calls: Vec<Call> = vec![];
+
+        if let (Some(ref message), Some(ref user), Some(ref signature)) = (&private_invoke.message, &private_invoke.user, &private_invoke.signature) {
+            all_calls.push(message.to_call(*user, signature));
+        }
+
+        all_calls.push(apply_call.clone());
+
+        let forwarder_call = Call {
+            to: self.forwarder,
+            selector: selector!("execute_calls"),
+            calldata: CalldataBuilder::new()
+                .encode(&all_calls)
+                .encode(&transfer.token())
+                .encode(&transfer.amount())
+                .encode(&Felt::ZERO)
+                .build(),
         };
 
         Ok(Calls::new(vec![forwarder_call]))
