@@ -226,6 +226,9 @@ pub struct ExecutableTransaction {
 
     /// Whitelisted privacy pool contract addresses
     pub privacy_pools: HashSet<Felt>,
+
+    /// Pool's collect_fee cost in STRK, charged on top of gas for private transactions
+    pub pool_collect_fee_amount: u128,
 }
 
 impl ExecutableTransaction {
@@ -306,26 +309,21 @@ impl ExecutableTransaction {
 
         let calls = self.build_private_calls(private_invoke, &transfer)?;
 
-        // Estimate gas using block gas prices
-        let estimated = client
-            .estimate_for_private(&calls, self.parameters.tip(), &private_invoke.proof_data)
-            .await?;
+        let estimated_calls = client.estimate_for_private(&calls, self.parameters.tip(), &private_invoke.proof_data).await?;
+        let fee_estimate = estimated_calls.estimate();
 
-        // Verify the fee TransferTo covers the estimated cost
-        let fee_estimate = estimated.estimate();
-        let paid_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
+        let gas_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
+        let gas_estimate = fee_estimate.update_overall_fee(gas_fee_in_strk);
+        let required_fee_in_strk = gas_fee_in_strk + Felt::from(self.pool_collect_fee_amount);
 
         let token_price = client.price.fetch_token(transfer.token()).await?;
-        let paid_fee_in_token = convert_strk_to_token(&token_price, paid_fee_in_strk, true)?;
+        let required_fee_in_token = convert_strk_to_token(&token_price, required_fee_in_strk, true)?;
 
-        let transfer_amount_felt = transfer.amount();
-        if paid_fee_in_token > transfer_amount_felt {
-            return Err(Error::MaxAmountTooLow(paid_fee_in_token.to_hex_string()));
+        if required_fee_in_token > transfer.amount() {
+            return Err(Error::MaxAmountTooLow(required_fee_in_token.to_hex_string()));
         }
 
-        // Finalize with the updated fee estimate
-        let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
-        let final_calls = calls.with_estimate_and_proof(final_fee_estimate, private_invoke.proof_data.clone());
+        let final_calls = calls.with_estimate_and_proof(gas_estimate, private_invoke.proof_data.clone());
 
         Ok(EstimatedExecutableTransaction(final_calls))
     }
@@ -715,6 +713,7 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
+            pool_collect_fee_amount: 0,
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -776,6 +775,7 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
+            pool_collect_fee_amount: 0,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -858,6 +858,7 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
+            pool_collect_fee_amount: 0,
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
