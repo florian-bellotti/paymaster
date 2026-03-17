@@ -1,7 +1,7 @@
 use paymaster_prices::math::convert_strk_to_token;
 use paymaster_starknet::transaction::{
-    parse_server_actions, CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder, ServerAction,
-    TokenTransfer,
+    has_invoke_action, parse_server_actions, CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder,
+    ServerAction, TokenTransfer,
 };
 use paymaster_starknet::Signature;
 use starknet::core::types::{Call, Felt, InvokeTransactionResult, TypedData};
@@ -286,25 +286,18 @@ impl ExecutableTransaction {
         let actions = parse_server_actions(&private_invoke.apply_actions_call.calldata)
             .map_err(|e| Error::CalldataParsing(e.to_string()))?;
 
-        // 2. Single pass: reject Invoke actions + find fee TransferTo
-        let mut fee_transfer = None;
+        // 2. Find fee TransferTo to an accepted recipient
+        let mut fee_transfer: Option<(Felt, u128)> = None;
         for action in &actions {
-            if matches!(action, ServerAction::Invoke { .. }) {
-                return Err(Error::InvokeActionNotAllowed);
-            }
             if fee_transfer.is_none() {
-                if let ServerAction::TransferTo { to_addr, .. } = action {
+                if let ServerAction::TransferTo { to_addr, token, amount } = action {
                     if self.accepted_fee_recipients.contains(to_addr) {
-                        fee_transfer = Some(action);
+                        fee_transfer = Some((*token, *amount));
                     }
                 }
             }
         }
-        let ServerAction::TransferTo { token: transfer_token, amount: transfer_amount, .. } =
-            fee_transfer.ok_or(Error::MissingFeeTransferTo)?
-        else {
-            unreachable!()
-        };
+        let (transfer_token, transfer_amount) = fee_transfer.ok_or(Error::MissingFeeTransferTo)?;
 
         // 4. Build calls via existing forwarder wrapping (same as sponsored path)
         let calls = self.build_private_sponsored_calls(private_invoke, vec![])?;
@@ -318,10 +311,10 @@ impl ExecutableTransaction {
         let fee_estimate = estimated.estimate();
         let paid_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
 
-        let token_price = client.price.fetch_token(*transfer_token).await?;
+        let token_price = client.price.fetch_token(transfer_token).await?;
         let paid_fee_in_token = convert_strk_to_token(&token_price, paid_fee_in_strk, true)?;
 
-        let transfer_amount_felt = Felt::from(*transfer_amount);
+        let transfer_amount_felt = Felt::from(transfer_amount);
         if paid_fee_in_token > transfer_amount_felt {
             return Err(Error::MaxAmountTooLow(paid_fee_in_token.to_hex_string()));
         }
@@ -372,6 +365,13 @@ impl ExecutableTransaction {
         }
         if apply_call.selector != selector!("apply_actions") {
             return Err(Error::InvalidApplyActionsSelector);
+        }
+
+        // Parse and validate ServerActions — reject Invoke actions (security)
+        let actions = parse_server_actions(&apply_call.calldata)
+            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
+        if has_invoke_action(&actions) {
+            return Err(Error::InvokeActionNotAllowed);
         }
 
         let mut all_calls: Vec<Call> = vec![];

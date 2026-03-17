@@ -40,6 +40,12 @@ pub enum ServerActionError {
     UnknownVariant(u64),
     /// Span length exceeds remaining data
     InvalidSpanLength,
+    /// Felt value exceeds target integer range
+    ValueOutOfRange,
+    /// Too many actions declared
+    TooManyActions,
+    /// Data remaining after parsing all declared actions
+    TrailingData,
 }
 
 impl std::fmt::Display for ServerActionError {
@@ -48,6 +54,9 @@ impl std::fmt::Display for ServerActionError {
             Self::UnexpectedEnd => write!(f, "calldata ended unexpectedly"),
             Self::UnknownVariant(v) => write!(f, "unknown ServerAction variant: {v}"),
             Self::InvalidSpanLength => write!(f, "span length exceeds remaining calldata"),
+            Self::ValueOutOfRange => write!(f, "felt value exceeds target integer range"),
+            Self::TooManyActions => write!(f, "too many actions declared"),
+            Self::TrailingData => write!(f, "trailing data after declared actions"),
         }
     }
 }
@@ -78,12 +87,12 @@ impl<'a> Cursor<'a> {
 
     fn next_u64(&mut self) -> Result<u64, ServerActionError> {
         let felt = self.next()?;
-        Ok(felt_to_u64(&felt))
+        felt_to_u64(felt)
     }
 
     fn next_u128(&mut self) -> Result<u128, ServerActionError> {
         let felt = self.next()?;
-        Ok(felt_to_u128(&felt))
+        felt_to_u128(felt)
     }
 
     fn next_span(&mut self) -> Result<Vec<Felt>, ServerActionError> {
@@ -105,14 +114,12 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn felt_to_u64(felt: &Felt) -> u64 {
-    let bytes = felt.to_bytes_be();
-    u64::from_be_bytes(bytes[24..32].try_into().unwrap())
+fn felt_to_u64(felt: Felt) -> Result<u64, ServerActionError> {
+    crate::math::felt_to_u64(felt).map_err(|_| ServerActionError::ValueOutOfRange)
 }
 
-fn felt_to_u128(felt: &Felt) -> u128 {
-    let bytes = felt.to_bytes_be();
-    u128::from_be_bytes(bytes[16..32].try_into().unwrap())
+fn felt_to_u128(felt: Felt) -> Result<u128, ServerActionError> {
+    crate::math::felt_to_u128(felt).map_err(|_| ServerActionError::ValueOutOfRange)
 }
 
 fn parse_action(cursor: &mut Cursor) -> Result<ServerAction, ServerActionError> {
@@ -189,6 +196,8 @@ fn parse_action(cursor: &mut Cursor) -> Result<ServerAction, ServerActionError> 
 /// The `apply_actions` function signature is `apply_actions(actions: Span<ServerAction>)`.
 /// Cairo serializes `Span<T>` as `[len, elem0, elem1, ...]`.
 /// The calldata starts with the span length, followed by all serialized actions.
+const MAX_ACTIONS: usize = 1024;
+
 pub fn parse_server_actions(calldata: &[Felt]) -> Result<Vec<ServerAction>, ServerActionError> {
     if calldata.is_empty() {
         return Err(ServerActionError::UnexpectedEnd);
@@ -199,9 +208,17 @@ pub fn parse_server_actions(calldata: &[Felt]) -> Result<Vec<ServerAction>, Serv
     // First felt is the span length (number of actions)
     let num_actions = cursor.next_u64()? as usize;
 
+    if num_actions > MAX_ACTIONS {
+        return Err(ServerActionError::TooManyActions);
+    }
+
     let mut actions = Vec::with_capacity(num_actions);
     for _ in 0..num_actions {
         actions.push(parse_action(&mut cursor)?);
+    }
+
+    if cursor.remaining() > 0 {
+        return Err(ServerActionError::TrailingData);
     }
 
     Ok(actions)

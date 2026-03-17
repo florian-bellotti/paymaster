@@ -2,7 +2,6 @@ extern crate starknet as starknet_rust;
 
 mod execution;
 
-use std::cmp::max;
 use std::collections::HashSet;
 
 use ::starknet::core::types::{Felt, InvokeTransactionResult, NonZeroFelt};
@@ -168,7 +167,7 @@ impl Client {
 
         let tip = self.get_tip(tip).await?;
         let gas_prices = self.starknet.fetch_block_gas_price().await?;
-        let estimate = TransactionGasEstimate::from_block_gas_prices(gas_prices, tip);
+        let estimate = TransactionGasEstimate::from_block_gas_prices(gas_prices, tip)?;
 
         Ok(calls.clone().with_estimate_and_proof(estimate, proof_data.clone()))
     }
@@ -176,7 +175,7 @@ impl Client {
     /// Get the tip value given a priority
     pub async fn get_tip(&self, tip: TipPriority) -> Result<u64, Error> {
         let tip: u64 = match tip {
-            TipPriority::Slow => max(self.starknet.fetch_median_tip().await? - 5, 0),
+            TipPriority::Slow => self.starknet.fetch_median_tip().await?.saturating_sub(5),
             TipPriority::Normal => self.starknet.fetch_median_tip().await?,
             TipPriority::Fast => self.starknet.fetch_median_tip().await? + 5,
             TipPriority::Custom(tip) => tip,

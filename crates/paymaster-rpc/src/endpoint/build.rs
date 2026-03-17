@@ -29,9 +29,11 @@ pub enum TransactionParameters {
     PrivateInvoke { private_invoke: PrivateInvokeParameters },
 }
 
-impl From<TransactionParameters> for paymaster_execution::TransactionParameters {
-    fn from(value: TransactionParameters) -> Self {
-        match value {
+impl TryFrom<TransactionParameters> for paymaster_execution::TransactionParameters {
+    type Error = Error;
+
+    fn try_from(value: TransactionParameters) -> Result<Self, Self::Error> {
+        Ok(match value {
             TransactionParameters::Deploy { deployment } => Self::Deploy { deployment: deployment.into() },
             TransactionParameters::Invoke { invoke } => Self::Invoke { invoke: invoke.into() },
             TransactionParameters::DeployAndInvoke { deployment, invoke } => Self::DeployAndInvoke {
@@ -39,10 +41,11 @@ impl From<TransactionParameters> for paymaster_execution::TransactionParameters 
                 invoke: invoke.into(),
             },
             TransactionParameters::PrivateInvoke { .. } => {
-                // PrivateInvoke uses a separate build path and should not go through standard estimation
-                unreachable!("PrivateInvoke should be handled by build_private_invoke, not converted to execution parameters")
+                return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
+                    "PrivateInvoke cannot be converted to standard transaction parameters".to_string(),
+                )));
             }
-        }
+        })
     }
 }
 
@@ -197,7 +200,11 @@ pub async fn build_transaction_endpoint(ctx: &RequestContext<'_>, request: Build
 async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
     let private_invoke = match &request.transaction {
         TransactionParameters::PrivateInvoke { private_invoke } => private_invoke.clone(),
-        _ => unreachable!(),
+        _ => {
+            return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
+                "Expected PrivateInvoke transaction".to_string(),
+            )));
+        }
     };
 
     // Validate pool is whitelisted
@@ -210,7 +217,7 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
     // Estimate gas using block gas prices (same approach as sponsored private execution)
     let gas_prices = ctx.execution.starknet.fetch_block_gas_price().await?;
     let tip = ctx.execution.get_tip(request.parameters.fee_mode().tip().into()).await?;
-    let estimate = paymaster_starknet::transaction::TransactionGasEstimate::from_block_gas_prices(gas_prices, tip);
+    let estimate = paymaster_starknet::transaction::TransactionGasEstimate::from_block_gas_prices(gas_prices, tip)?;
 
     let gas_token = request.parameters.gas_token();
     let token = ctx.execution.price.fetch_token(gas_token).await?;
@@ -255,7 +262,7 @@ async fn build_deploy_sponsored(ctx: &Context, request: BuildTransactionRequest)
 
     let transaction = Transaction {
         forwarder: ctx.configuration.forwarder,
-        transaction: request.transaction.into(),
+        transaction: request.transaction.try_into()?,
         parameters: request.parameters.into(),
     };
 
@@ -270,7 +277,7 @@ async fn build_deploy_sponsored(ctx: &Context, request: BuildTransactionRequest)
 async fn build_transaction(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
     let transaction = Transaction {
         forwarder: ctx.configuration.forwarder,
-        transaction: request.transaction.into(),
+        transaction: request.transaction.try_into()?,
         parameters: request.parameters.into(),
     };
 
