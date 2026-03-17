@@ -158,12 +158,19 @@ impl Client {
         Ok(result)
     }
 
-    /// Estimate the gas cost with proof data for privacy transactions
-    pub async fn estimate_with_proof(&self, calls: &Calls, tip: TipPriority, proof_data: &PrivateProofData) -> Result<EstimatedCalls, Error> {
-        let tip = self.get_tip(tip).await?;
-        let result = calls.estimate_with_proof(&self.estimate_account, Some(tip), proof_data).await?;
+    /// Estimate gas for privacy transactions using block gas prices instead of simulation.
+    /// Fee estimation via starknet_estimateFee is not supported for transactions with
+    /// proof_facts (the node rejects the VOS program hash during simulation).
+    // TODO: Restore proper fee estimation via estimate_with_proof once the node supports
+    // proof_facts in starknet_estimateFee (VOS program hash validation during simulation).
+    pub async fn estimate_for_private(&self, calls: &Calls, tip: TipPriority, proof_data: &PrivateProofData) -> Result<EstimatedCalls, Error> {
+        use paymaster_starknet::transaction::TransactionGasEstimate;
 
-        Ok(result)
+        let tip = self.get_tip(tip).await?;
+        let gas_prices = self.starknet.fetch_block_gas_price().await?;
+        let estimate = TransactionGasEstimate::from_block_gas_prices(gas_prices, tip);
+
+        Ok(calls.clone().with_estimate_and_proof(estimate, proof_data.clone()))
     }
 
     /// Get the tip value given a priority

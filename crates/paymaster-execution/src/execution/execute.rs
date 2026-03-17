@@ -212,7 +212,7 @@ impl ExecutableTransaction {
         let (calls, estimated_calls) = if let ExecutableTransactionParameters::PrivateInvoke { ref private_invoke } = self.transaction {
             let calls = self.build_private_sponsored_calls(private_invoke, sponsor_metadata)?;
             let estimated = client
-                .estimate_with_proof(&calls, self.parameters.tip(), proof_data.as_ref().expect("PrivateInvoke must have proof_data"))
+                .estimate_for_private(&calls, self.parameters.tip(), proof_data.as_ref().expect("PrivateInvoke must have proof_data"))
                 .await?;
             (calls, estimated)
         } else {
