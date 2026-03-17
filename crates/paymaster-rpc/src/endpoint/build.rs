@@ -4,6 +4,8 @@ use jsonrpsee::core::Serialize;
 use paymaster_execution::Transaction;
 use paymaster_starknet::transaction::Calls;
 use serde::Deserialize;
+use serde_with::serde_as;
+use starknet::core::serde::unsigned_field_element::UfeHex;
 use starknet::core::types::{Call, Felt, TypedData};
 
 use crate::context::Context;
@@ -24,6 +26,7 @@ pub enum TransactionParameters {
     Deploy { deployment: DeploymentParameters },
     Invoke { invoke: InvokeParameters },
     DeployAndInvoke { deployment: DeploymentParameters, invoke: InvokeParameters },
+    PrivateInvoke { private_invoke: PrivateInvokeParameters },
 }
 
 impl From<TransactionParameters> for paymaster_execution::TransactionParameters {
@@ -35,6 +38,10 @@ impl From<TransactionParameters> for paymaster_execution::TransactionParameters 
                 deployment: deployment.into(),
                 invoke: invoke.into(),
             },
+            TransactionParameters::PrivateInvoke { .. } => {
+                // PrivateInvoke uses a separate build path and should not go through standard estimation
+                unreachable!("PrivateInvoke should be handled by build_private_invoke, not converted to execution parameters")
+            }
         }
     }
 }
@@ -45,6 +52,7 @@ impl TransactionParameters {
             Self::Deploy { .. } => &[],
             Self::Invoke { invoke } => &invoke.calls,
             Self::DeployAndInvoke { invoke, .. } => &invoke.calls,
+            Self::PrivateInvoke { private_invoke } => &private_invoke.calls,
         }
     }
 }
@@ -52,6 +60,16 @@ impl TransactionParameters {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct InvokeParameters {
     pub user_address: Felt,
+    pub calls: Vec<Call>,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PrivateInvokeParameters {
+    #[serde_as(as = "UfeHex")]
+    pub user_address: Felt,
+    #[serde_as(as = "UfeHex")]
+    pub pool_address: Felt,
     pub calls: Vec<Call>,
 }
 
@@ -70,6 +88,7 @@ pub enum BuildTransactionResponse {
     Deploy(DeployTransaction),
     Invoke(InvokeTransaction),
     DeployAndInvoke(DeployAndInvokeTransaction),
+    PrivateInvoke(PrivateInvokeTransaction),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -112,6 +131,31 @@ impl From<DeployAndInvokeTransaction> for BuildTransactionResponse {
     }
 }
 
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PrivateInvokeTransaction {
+    pub parameters: ExecutionParameters,
+    pub fee: FeeEstimate,
+    pub fee_action: FeeAction,
+}
+
+impl From<PrivateInvokeTransaction> for BuildTransactionResponse {
+    fn from(value: PrivateInvokeTransaction) -> Self {
+        Self::PrivateInvoke(value)
+    }
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FeeAction {
+    #[serde_as(as = "UfeHex")]
+    pub recipient: Felt,
+    #[serde_as(as = "UfeHex")]
+    pub token: Felt,
+    #[serde_as(as = "UfeHex")]
+    pub amount: Felt,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FeeEstimate {
     pub gas_token_price_in_strk: Felt,
@@ -145,8 +189,60 @@ pub async fn build_transaction_endpoint(ctx: &RequestContext<'_>, request: Build
 
     match &request.transaction {
         TransactionParameters::Deploy { .. } if request.parameters.fee_mode().is_sponsored() => build_deploy_sponsored(ctx, request).await,
+        TransactionParameters::PrivateInvoke { .. } => build_private_invoke(ctx, request).await,
         _ => build_transaction(ctx, request).await,
     }
+}
+
+async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
+    let private_invoke = match &request.transaction {
+        TransactionParameters::PrivateInvoke { private_invoke } => private_invoke.clone(),
+        _ => unreachable!(),
+    };
+
+    // Validate pool is whitelisted
+    if !ctx.configuration.privacy_pools.contains(&private_invoke.pool_address) {
+        return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
+            "privacy pool address is not whitelisted".to_string(),
+        )));
+    }
+
+    // Estimate gas using block gas prices (same approach as sponsored private execution)
+    let gas_prices = ctx.execution.starknet.fetch_block_gas_price().await?;
+    let tip = ctx.execution.get_tip(request.parameters.fee_mode().tip().into()).await?;
+    let estimate = paymaster_starknet::transaction::TransactionGasEstimate::from_block_gas_prices(gas_prices, tip);
+
+    let gas_token = request.parameters.gas_token();
+    let token = ctx.execution.price.fetch_token(gas_token).await?;
+
+    let estimated_fee_in_strk = Felt::from(estimate.overall_fee);
+    let estimated_fee_in_gas_token = paymaster_prices::math::convert_strk_to_token(&token, estimated_fee_in_strk, true)?;
+
+    // Add pool collect_fee cost (in STRK) to the total fee
+    let pool_fee = Felt::from(ctx.configuration.pool_collect_fee_amount);
+    let total_fee_in_strk = estimated_fee_in_strk + pool_fee;
+
+    let suggested_max_fee_in_strk = ctx.execution.compute_max_fee_in_strk(total_fee_in_strk);
+    let suggested_max_fee_in_gas_token = paymaster_prices::math::convert_strk_to_token(&token, suggested_max_fee_in_strk, true)?;
+
+    let parameters = request.parameters.clone();
+
+    Ok(PrivateInvokeTransaction {
+        parameters,
+        fee: FeeEstimate {
+            gas_token_price_in_strk: token.price_in_strk,
+            estimated_fee_in_strk: total_fee_in_strk,
+            estimated_fee_in_gas_token,
+            suggested_max_fee_in_strk,
+            suggested_max_fee_in_gas_token,
+        },
+        fee_action: FeeAction {
+            recipient: ctx.configuration.fee_recipient,
+            token: gas_token,
+            amount: suggested_max_fee_in_gas_token,
+        },
+    }
+    .into())
 }
 
 async fn build_deploy_sponsored(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {

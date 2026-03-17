@@ -134,6 +134,7 @@ pub async fn execute_endpoint(ctx: &RequestContext<'_>, request: ExecuteRequest)
         parameters: request.parameters.into(),
         transaction: request.transaction.try_into()?,
         privacy_pools: ctx.configuration.privacy_pools.clone(),
+        accepted_fee_recipients: ctx.configuration.accepted_fee_recipients.clone(),
     };
 
     ctx.transaction_filter.filter(&transaction.transaction)?;

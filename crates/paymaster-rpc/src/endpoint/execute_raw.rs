@@ -71,6 +71,7 @@ pub async fn execute_direct_endpoint(ctx: &RequestContext<'_>, request: ExecuteD
         parameters: request.parameters.into(),
         transaction: request.transaction.into(),
         privacy_pools: HashSet::new(),
+        accepted_fee_recipients: HashSet::new(),
     };
 
     let estimated_transaction = if transaction.parameters.fee_mode().is_sponsored() {

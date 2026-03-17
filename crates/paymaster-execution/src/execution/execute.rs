@@ -1,5 +1,8 @@
 use paymaster_prices::math::convert_strk_to_token;
-use paymaster_starknet::transaction::{CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder, TokenTransfer};
+use paymaster_starknet::transaction::{
+    parse_server_actions, CalldataBuilder, Calls, EstimatedCalls, ExecuteFromOutsideMessage, PrivateProofData, SequentialCalldataDecoder, ServerAction,
+    TokenTransfer,
+};
 use paymaster_starknet::Signature;
 use starknet::core::types::{Call, Felt, InvokeTransactionResult, TypedData};
 use starknet::macros::selector;
@@ -202,6 +205,9 @@ pub struct ExecutableTransaction {
 
     /// Whitelisted privacy pool contract addresses
     pub privacy_pools: HashSet<Felt>,
+
+    /// Accepted fee recipient addresses for gasless private transactions
+    pub accepted_fee_recipients: HashSet<Felt>,
 }
 
 impl ExecutableTransaction {
@@ -236,11 +242,19 @@ impl ExecutableTransaction {
     }
 
     pub async fn estimate_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
+        match &self.transaction {
+            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => {
+                self.estimate_gasless_private(client, private_invoke).await
+            }
+            _ => self.estimate_standard_transaction(client).await,
+        }
+    }
+
+    async fn estimate_standard_transaction(self, client: &Client) -> Result<EstimatedExecutableTransaction, Error> {
         let transfer = match &self.transaction {
             ExecutableTransactionParameters::Invoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
             ExecutableTransactionParameters::DeployAndInvoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
             ExecutableTransactionParameters::DirectInvoke { invoke, .. } => invoke.find_gas_token_transfer(self.forwarder)?,
-            ExecutableTransactionParameters::PrivateInvoke { .. } => return Err(Error::PrivacyRequiresSponsoring),
             _ => return Err(Error::InvalidTypedData),
         };
 
@@ -264,6 +278,59 @@ impl ExecutableTransaction {
         let estimated_final_calls = final_calls.with_estimate(final_fee_estimate);
 
         Ok(EstimatedExecutableTransaction(estimated_final_calls))
+    }
+
+    /// Gasless path for private transactions: verify fee payment via TransferTo in calldata
+    async fn estimate_gasless_private(&self, client: &Client, private_invoke: &ExecutablePrivateInvokeParameters) -> Result<EstimatedExecutableTransaction, Error> {
+        // 1. Parse ServerActions from apply_actions_call calldata
+        let actions = parse_server_actions(&private_invoke.apply_actions_call.calldata)
+            .map_err(|e| Error::CalldataParsing(e.to_string()))?;
+
+        // 2. Single pass: reject Invoke actions + find fee TransferTo
+        let mut fee_transfer = None;
+        for action in &actions {
+            if matches!(action, ServerAction::Invoke { .. }) {
+                return Err(Error::InvokeActionNotAllowed);
+            }
+            if fee_transfer.is_none() {
+                if let ServerAction::TransferTo { to_addr, .. } = action {
+                    if self.accepted_fee_recipients.contains(to_addr) {
+                        fee_transfer = Some(action);
+                    }
+                }
+            }
+        }
+        let ServerAction::TransferTo { token: transfer_token, amount: transfer_amount, .. } =
+            fee_transfer.ok_or(Error::MissingFeeTransferTo)?
+        else {
+            unreachable!()
+        };
+
+        // 4. Build calls via existing forwarder wrapping (same as sponsored path)
+        let calls = self.build_private_sponsored_calls(private_invoke, vec![])?;
+
+        // 5. Estimate gas using block gas prices
+        let estimated = client
+            .estimate_for_private(&calls, self.parameters.tip(), &private_invoke.proof_data)
+            .await?;
+
+        // 6. Verify the fee TransferTo covers the estimated cost
+        let fee_estimate = estimated.estimate();
+        let paid_fee_in_strk = self.compute_paid_fee(client, Felt::from(fee_estimate.overall_fee)).await?;
+
+        let token_price = client.price.fetch_token(*transfer_token).await?;
+        let paid_fee_in_token = convert_strk_to_token(&token_price, paid_fee_in_strk, true)?;
+
+        let transfer_amount_felt = Felt::from(*transfer_amount);
+        if paid_fee_in_token > transfer_amount_felt {
+            return Err(Error::MaxAmountTooLow(paid_fee_in_token.to_hex_string()));
+        }
+
+        // 7. Finalize with the updated fee estimate
+        let final_fee_estimate = fee_estimate.update_overall_fee(paid_fee_in_strk);
+        let final_calls = calls.with_estimate_and_proof(final_fee_estimate, private_invoke.proof_data.clone());
+
+        Ok(EstimatedExecutableTransaction(final_calls))
     }
 
     async fn compute_paid_fee(&self, client: &Client, base_estimate: Felt) -> Result<Felt, Error> {
@@ -604,6 +671,7 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
+            accepted_fee_recipients: HashSet::new(),
         };
 
         let estimate = transaction.estimate_sponsored_transaction(&client, vec![]).await.unwrap();
@@ -665,6 +733,7 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
+            accepted_fee_recipients: HashSet::new(),
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
@@ -747,6 +816,7 @@ mod tests {
                 time_bounds: None,
             },
             privacy_pools: HashSet::new(),
+            accepted_fee_recipients: HashSet::new(),
         };
 
         let estimate = transaction.estimate_transaction(&client).await.unwrap();
