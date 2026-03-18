@@ -7,7 +7,7 @@ pub use deploy::DeploymentParameters;
 mod execute;
 pub use execute::{
     EstimatedExecutableTransaction, ExecutableDirectInvokeParameters, ExecutableInvokeParameters, ExecutablePrivateInvokeParameters, ExecutableTransaction,
-    ExecutableTransactionParameters,
+    ExecutableTransactionParameters, ParsedExecuteFromOutside,
 };
 
 mod fee;

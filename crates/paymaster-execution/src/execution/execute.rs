@@ -95,31 +95,38 @@ impl ExecutableInvokeParameters {
 }
 
 #[derive(Debug, Hash)]
+pub struct ParsedExecuteFromOutside {
+    pub user: Felt,
+    pub signature: Signature,
+    pub message: ExecuteFromOutsideMessage,
+}
+
+#[derive(Debug, Hash)]
 pub struct ExecutablePrivateInvokeParameters {
-    pub user: Option<Felt>,
-    pub signature: Option<Signature>,
-    pub message: Option<ExecuteFromOutsideMessage>,
+    pub execute_from_outside: Option<ParsedExecuteFromOutside>,
     pub apply_actions_call: Call,
     pub proof_data: PrivateProofData,
 }
 
 impl ExecutablePrivateInvokeParameters {
     pub fn new(
-        user: Option<Felt>,
-        typed_data: Option<TypedData>,
-        signature: Option<Signature>,
+        execute_from_outside: Option<(Felt, TypedData, Signature)>,
         apply_actions_call: Call,
         proof: String,
         proof_facts: Vec<Felt>,
     ) -> Result<Self, Error> {
+        let execute_from_outside: Option<ParsedExecuteFromOutside> = execute_from_outside
+            .map(|(user, typed_data, signature)| -> Result<_, Error> {
+                Ok(ParsedExecuteFromOutside {
+                    user,
+                    signature,
+                    message: ExecuteFromOutsideMessage::from_typed_data(&typed_data)?,
+                })
+            })
+            .transpose()?;
+
         Ok(Self {
-            user,
-            signature,
-            message: if let Some(typed_data) = typed_data {
-                Some(ExecuteFromOutsideMessage::from_typed_data(&typed_data)?)
-            } else {
-                None
-            },
+            execute_from_outside,
             apply_actions_call,
             proof_data: PrivateProofData { proof, proof_facts },
         })
@@ -127,9 +134,9 @@ impl ExecutablePrivateInvokeParameters {
 
     pub fn get_unique_identifier(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.user.hash(&mut hasher);
-        if let Some(message) = &self.message {
-            message.nonce().hash(&mut hasher);
+        if let Some(efo) = &self.execute_from_outside {
+            efo.user.hash(&mut hasher);
+            efo.message.nonce().hash(&mut hasher);
         }
         self.apply_actions_call.calldata.hash(&mut hasher);
         self.proof_data.hash(&mut hasher);
@@ -360,15 +367,10 @@ impl ExecutableTransaction {
             return Err(Error::InvalidApplyActionsSelector);
         }
 
-        let execute_call = private_invoke
-            .message
-            .as_ref()
-            .zip(private_invoke.user.as_ref())
-            .zip(private_invoke.signature.as_ref())
-            .map(|((message, user), signature)| message.to_call(*user, signature));
-
         let mut calls = Vec::new();
-        calls.extend(execute_call);
+        if let Some(efo) = &private_invoke.execute_from_outside {
+            calls.push(efo.message.to_call(efo.user, &efo.signature));
+        }
         calls.push(apply_call.clone());
         Ok(calls)
     }

@@ -55,7 +55,7 @@ impl TransactionParameters {
             Self::Deploy { .. } => &[],
             Self::Invoke { invoke } => &invoke.calls,
             Self::DeployAndInvoke { invoke, .. } => &invoke.calls,
-            Self::PrivateInvoke { private_invoke } => &private_invoke.calls,
+            Self::PrivateInvoke { private_invoke } => private_invoke.user_calls.as_ref().map(|uc| uc.calls.as_slice()).unwrap_or(&[]),
         }
     }
 }
@@ -68,12 +68,19 @@ pub struct InvokeParameters {
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PrivateInvokeParameters {
+pub struct UserCallsParameters {
     #[serde_as(as = "UfeHex")]
     pub user_address: Felt,
+    pub calls: Vec<Call>,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PrivateInvokeParameters {
     #[serde_as(as = "UfeHex")]
     pub pool_address: Felt,
-    pub calls: Vec<Call>,
+    #[serde(default)]
+    pub user_calls: Option<UserCallsParameters>,
 }
 
 impl From<InvokeParameters> for paymaster_execution::InvokeParameters {

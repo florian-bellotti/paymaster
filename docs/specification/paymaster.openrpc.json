@@ -337,20 +337,32 @@
           "proof_facts"
         ],
         "properties": {
-          "user_address": {
-            "title": "User Account",
-            "description": "The address of the user account (optional, required when an execute_from_outside call is included)",
-            "$ref": "#/components/schemas/ADDRESS"
-          },
-          "typed_data": {
-            "title": "Typed data",
-            "description": "Optional typed data wrapping user calls (e.g. approve) to be executed before the privacy action",
-            "$ref": "#/components/schemas/OUTSIDE_EXECUTION_TYPED_DATA"
-          },
-          "signature": {
-            "title": "Signature",
-            "description": "Signature of the associated typed data (required when typed_data is provided)",
-            "$ref": "#/components/schemas/SIGNATURE"
+          "execute_from_outside": {
+            "title": "Execute from outside data",
+            "description": "Optional grouped data for an execute_from_outside call: user address, typed data wrapping user calls, and signature",
+            "type": "object",
+            "required": [
+              "user_address",
+              "typed_data",
+              "signature"
+            ],
+            "properties": {
+              "user_address": {
+                "title": "User Account",
+                "description": "The address of the user account",
+                "$ref": "#/components/schemas/ADDRESS"
+              },
+              "typed_data": {
+                "title": "Typed data",
+                "description": "Typed data wrapping user calls (e.g. approve) to be executed before the privacy action",
+                "$ref": "#/components/schemas/OUTSIDE_EXECUTION_TYPED_DATA"
+              },
+              "signature": {
+                "title": "Signature",
+                "description": "Signature of the associated typed data",
+                "$ref": "#/components/schemas/SIGNATURE"
+              }
+            }
           },
           "apply_actions_call": {
             "title": "Apply actions call",
@@ -482,30 +494,39 @@
       },
       "PAYMASTER_PRIVATE_INVOKE": {
         "title": "Private Invoke Parameters",
-        "description": "Parameters for a gasless private transaction: user address, privacy pool, and optional user calls",
+        "description": "Parameters for a gasless private transaction: privacy pool and optional user calls",
         "type": "object",
         "required": [
-          "user_address",
-          "pool_address",
-          "calls"
+          "pool_address"
         ],
         "properties": {
-          "user_address": {
-            "title": "User Account",
-            "description": "The address of the user account",
-            "$ref": "#/components/schemas/FELT"
-          },
           "pool_address": {
             "title": "Pool Address",
             "description": "The address of the privacy pool contract",
             "$ref": "#/components/schemas/FELT"
           },
-          "calls": {
-            "title": "Calls",
-            "description": "Optional user calls to include in the transaction (e.g. approve for deposits)",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/CALL"
+          "user_calls": {
+            "title": "User Calls",
+            "description": "Optional grouped user calls parameters: user address and calls to include in the transaction (e.g. approve for deposits)",
+            "type": "object",
+            "required": [
+              "user_address",
+              "calls"
+            ],
+            "properties": {
+              "user_address": {
+                "title": "User Account",
+                "description": "The address of the user account",
+                "$ref": "#/components/schemas/FELT"
+              },
+              "calls": {
+                "title": "Calls",
+                "description": "User calls to include in the transaction (e.g. approve for deposits)",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CALL"
+                }
+              }
             }
           }
         }
