@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use jsonrpsee::core::Serialize;
-use paymaster_execution::Transaction;
+use paymaster_execution::{PrivateTransaction, Transaction};
 use paymaster_starknet::transaction::Calls;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -150,13 +150,16 @@ impl From<PrivateInvokeTransaction> for BuildTransactionResponse {
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct FeeAction {
-    #[serde_as(as = "UfeHex")]
-    pub recipient: Felt,
-    #[serde_as(as = "UfeHex")]
-    pub token: Felt,
-    #[serde_as(as = "UfeHex")]
-    pub amount: Felt,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FeeAction {
+    Withdraw {
+        #[serde_as(as = "UfeHex")]
+        recipient: Felt,
+        #[serde_as(as = "UfeHex")]
+        token: Felt,
+        #[serde_as(as = "UfeHex")]
+        amount: Felt,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -184,10 +187,8 @@ impl From<paymaster_execution::FeeEstimate> for FeeEstimate {
 
 impl From<paymaster_execution::FeeAction> for FeeAction {
     fn from(value: paymaster_execution::FeeAction) -> Self {
-        Self {
-            recipient: value.recipient,
-            token: value.token,
-            amount: value.amount,
+        match value {
+            paymaster_execution::FeeAction::Withdraw { recipient, token, amount } => Self::Withdraw { recipient, token, amount },
         }
     }
 }
@@ -226,10 +227,10 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
 
     let parameters = request.parameters.clone();
 
-    let transaction = paymaster_execution::PrivateTransaction {
+    let transaction = PrivateTransaction {
+        forwarder: ctx.configuration.forwarder,
         parameters: request.parameters.into(),
         pool_fee_amount: ctx.configuration.privacy_pool_fee_amount,
-        gas_tank_address: ctx.configuration.gas_tank.address,
     };
 
     let estimated = transaction.estimate(&ctx.execution).await?;

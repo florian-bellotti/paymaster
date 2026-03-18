@@ -6,10 +6,8 @@ pub use estimate::FeeEstimate;
 
 use starknet::core::types::Felt;
 
-/// Action describing a fee transfer the user must approve for private transactions.
+/// Action describing a fee payment the user must include in their private transaction.
 #[derive(Debug, Clone)]
-pub struct FeeAction {
-    pub recipient: Felt,
-    pub token: Felt,
-    pub amount: Felt,
+pub enum FeeAction {
+    Withdraw { recipient: Felt, token: Felt, amount: Felt },
 }

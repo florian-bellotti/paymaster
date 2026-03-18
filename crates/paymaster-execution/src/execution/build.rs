@@ -310,9 +310,9 @@ impl VersionedTransaction {
 /// Paymaster transaction for private invoke flows that uses block gas prices instead of simulation.
 #[derive(Debug)]
 pub struct PrivateTransaction {
+    pub forwarder: ContractAddress,
     pub parameters: ExecutionParameters,
     pub pool_fee_amount: u128,
-    pub gas_tank_address: Felt,
 }
 
 /// Estimated private transaction with fee details and the fee action the user must approve.
@@ -355,8 +355,8 @@ impl PrivateTransaction {
                 suggested_max_fee_in_strk,
                 suggested_max_fee_in_gas_token,
             },
-            fee_action: FeeAction {
-                recipient: self.gas_tank_address,
+            fee_action: FeeAction::Withdraw {
+                recipient: self.forwarder,
                 token: gas_token,
                 amount: suggested_max_fee_in_gas_token,
             },

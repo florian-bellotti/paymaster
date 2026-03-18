@@ -668,30 +668,40 @@
       },
       "FEE_ACTION": {
         "title": "Fee action",
-        "description": "Describes the fee payment that the user must include as a Withdraw action in the privacy proof. The resulting TransferTo server action pays the paymaster fee recipient",
-        "type": "object",
-        "required": [
-          "recipient",
-          "token",
-          "amount"
-        ],
-        "properties": {
-          "recipient": {
-            "title": "Fee recipient",
-            "description": "The address that should receive the fee payment (paymaster fee recipient)",
-            "$ref": "#/components/schemas/ADDRESS"
-          },
-          "token": {
-            "title": "Token",
-            "description": "The token used for fee payment",
-            "$ref": "#/components/schemas/ADDRESS"
-          },
-          "amount": {
-            "title": "Amount",
-            "description": "The fee amount to withdraw (covers gas cost + pool fee + provider overhead)",
-            "$ref": "#/components/schemas/FELT"
+        "description": "Describes the fee payment the user must include in the privacy proof. The type field indicates the mechanism (e.g. withdraw). The resulting TransferTo server action pays the forwarder, which forwards to the gas fees recipient",
+        "oneOf": [
+          {
+            "type": "object",
+            "title": "Withdraw fee action",
+            "required": [
+              "type",
+              "recipient",
+              "token",
+              "amount"
+            ],
+            "properties": {
+              "type": {
+                "title": "Action type",
+                "const": "withdraw"
+              },
+              "recipient": {
+                "title": "Fee recipient",
+                "description": "The forwarder address that should receive the fee payment via a Withdraw/TransferTo action",
+                "$ref": "#/components/schemas/ADDRESS"
+              },
+              "token": {
+                "title": "Token",
+                "description": "The token used for fee payment",
+                "$ref": "#/components/schemas/ADDRESS"
+              },
+              "amount": {
+                "title": "Amount",
+                "description": "The fee amount to withdraw (covers gas cost + pool fee + provider overhead)",
+                "$ref": "#/components/schemas/FELT"
+              }
+            }
           }
-        }
+        ]
       },
       "ADDRESS": {
         "title": "Address",

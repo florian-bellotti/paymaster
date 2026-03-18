@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use starknet::core::types::Felt;
 
 /// ServerAction enum matching the Cairo contract's `ServerAction` enum.
@@ -46,33 +44,20 @@ pub enum ServerAction {
 }
 
 /// Error type for ServerAction parsing
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ServerActionError {
-    /// Calldata ended unexpectedly
+    #[error("calldata ended unexpectedly")]
     UnexpectedEnd,
-    /// Unknown variant index
+    #[error("unknown ServerAction variant: {0}")]
     UnknownVariant(u64),
-    /// Span length exceeds remaining data
+    #[error("span length exceeds remaining calldata")]
     InvalidSpanLength,
-    /// Felt value exceeds target integer range
+    #[error("felt value exceeds target integer range")]
     ValueOutOfRange,
-    /// Too many actions declared
+    #[error("too many actions declared")]
     TooManyActions,
-    /// Data remaining after parsing all declared actions
+    #[error("trailing data after declared actions")]
     TrailingData,
-}
-
-impl std::fmt::Display for ServerActionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnexpectedEnd => write!(f, "calldata ended unexpectedly"),
-            Self::UnknownVariant(v) => write!(f, "unknown ServerAction variant: {v}"),
-            Self::InvalidSpanLength => write!(f, "span length exceeds remaining calldata"),
-            Self::ValueOutOfRange => write!(f, "felt value exceeds target integer range"),
-            Self::TooManyActions => write!(f, "too many actions declared"),
-            Self::TrailingData => write!(f, "trailing data after declared actions"),
-        }
-    }
 }
 
 /// Cursor-based parser for Cairo-serialized data
@@ -101,12 +86,12 @@ impl<'a> Cursor<'a> {
 
     fn next_u64(&mut self) -> Result<u64, ServerActionError> {
         let felt = self.next()?;
-        felt_to_u64(felt)
+        crate::math::felt_to_u64(felt).map_err(|_| ServerActionError::ValueOutOfRange)
     }
 
     fn next_u128(&mut self) -> Result<u128, ServerActionError> {
         let felt = self.next()?;
-        felt_to_u128(felt)
+        crate::math::felt_to_u128(felt).map_err(|_| ServerActionError::ValueOutOfRange)
     }
 
     fn next_span(&mut self) -> Result<Vec<Felt>, ServerActionError> {
@@ -126,14 +111,6 @@ impl<'a> Cursor<'a> {
         }
         Ok(arr)
     }
-}
-
-fn felt_to_u64(felt: Felt) -> Result<u64, ServerActionError> {
-    crate::math::felt_to_u64(felt).map_err(|_| ServerActionError::ValueOutOfRange)
-}
-
-fn felt_to_u128(felt: Felt) -> Result<u128, ServerActionError> {
-    crate::math::felt_to_u128(felt).map_err(|_| ServerActionError::ValueOutOfRange)
 }
 
 fn parse_action(cursor: &mut Cursor) -> Result<ServerAction, ServerActionError> {
@@ -230,10 +207,6 @@ fn parse_action(cursor: &mut Cursor) -> Result<ServerAction, ServerActionError> 
 const MAX_ACTIONS: usize = 1024;
 
 pub fn parse_server_actions(calldata: &[Felt]) -> Result<Vec<ServerAction>, ServerActionError> {
-    if calldata.is_empty() {
-        return Err(ServerActionError::UnexpectedEnd);
-    }
-
     let mut cursor = Cursor::new(calldata);
 
     // First felt is the span length (number of actions)
@@ -253,18 +226,6 @@ pub fn parse_server_actions(calldata: &[Felt]) -> Result<Vec<ServerAction>, Serv
     }
 
     Ok(actions)
-}
-
-/// Find the first `TransferTo` action where `to_addr` is in the accepted recipients set.
-pub fn find_transfer_to<'a>(actions: &'a [ServerAction], accepted_recipients: &HashSet<Felt>) -> Option<&'a ServerAction> {
-    actions
-        .iter()
-        .find(|action| matches!(action, ServerAction::TransferTo { to_addr, .. } if accepted_recipients.contains(to_addr)))
-}
-
-/// Check if any `Invoke` action (variant 10) is present — security risk.
-pub fn has_invoke_action(actions: &[ServerAction]) -> bool {
-    actions.iter().any(|action| matches!(action, ServerAction::Invoke { .. }))
 }
 
 #[cfg(test)]
@@ -421,75 +382,6 @@ mod tests {
         assert!(matches!(&actions[0], ServerAction::TransferTo { to_addr, amount, .. } if *to_addr == felt!("0xFEE") && *amount == 100));
         assert!(matches!(&actions[1], ServerAction::EmitWithdrawal { .. }));
         assert!(matches!(&actions[2], ServerAction::WriteOnce { .. }));
-    }
-
-    #[test]
-    fn find_transfer_to_works() {
-        let actions = vec![
-            ServerAction::WriteOnce {
-                storage_address: Felt::ZERO,
-                value: vec![],
-            },
-            ServerAction::TransferTo {
-                to_addr: felt!("0xABC"),
-                token: felt!("0x111"),
-                amount: 100,
-            },
-            ServerAction::EmitWithdrawal {
-                enc_user_addr: [Felt::ZERO; 3],
-                to_addr: felt!("0xABC"),
-                token: felt!("0x111"),
-                amount: 100,
-            },
-        ];
-        let mut recipients = HashSet::new();
-        recipients.insert(felt!("0xABC"));
-
-        let found = find_transfer_to(&actions, &recipients);
-        assert!(found.is_some());
-        assert!(matches!(found.unwrap(), ServerAction::TransferTo { to_addr, .. } if *to_addr == felt!("0xABC")));
-    }
-
-    #[test]
-    fn find_transfer_to_returns_none_if_not_in_set() {
-        let actions = vec![ServerAction::TransferTo {
-            to_addr: felt!("0xABC"),
-            token: felt!("0x111"),
-            amount: 100,
-        }];
-        let mut recipients = HashSet::new();
-        recipients.insert(felt!("0xDEF"));
-
-        assert!(find_transfer_to(&actions, &recipients).is_none());
-    }
-
-    #[test]
-    fn has_invoke_action_detects_invoke() {
-        let actions = vec![
-            ServerAction::TransferTo {
-                to_addr: Felt::ZERO,
-                token: Felt::ZERO,
-                amount: 0,
-            },
-            ServerAction::Invoke {
-                contract_address: felt!("0x123"),
-                calldata: vec![],
-            },
-        ];
-        assert!(has_invoke_action(&actions));
-    }
-
-    #[test]
-    fn has_invoke_action_returns_false_when_absent() {
-        let actions = vec![
-            ServerAction::TransferTo {
-                to_addr: Felt::ZERO,
-                token: Felt::ZERO,
-                amount: 0,
-            },
-            ServerAction::EmitNoteUsed { nullifier: Felt::ZERO },
-        ];
-        assert!(!has_invoke_action(&actions));
     }
 
     #[test]
