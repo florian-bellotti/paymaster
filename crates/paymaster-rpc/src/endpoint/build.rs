@@ -182,6 +182,16 @@ impl From<paymaster_execution::FeeEstimate> for FeeEstimate {
     }
 }
 
+impl From<paymaster_execution::FeeAction> for FeeAction {
+    fn from(value: paymaster_execution::FeeAction) -> Self {
+        Self {
+            recipient: value.recipient,
+            token: value.token,
+            amount: value.amount,
+        }
+    }
+}
+
 pub async fn build_transaction_endpoint(ctx: &RequestContext<'_>, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
     check_service_is_available(ctx).await?;
     check_is_allowed_fee_mode(ctx, &request.parameters).await?;
@@ -214,40 +224,20 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
         )));
     }
 
-    // Estimate gas using block gas prices (same approach as sponsored private execution)
-    let gas_prices = ctx.execution.starknet.fetch_block_gas_price().await?;
-    let tip = ctx.execution.get_tip(request.parameters.fee_mode().tip().into()).await?;
-    let estimate = paymaster_starknet::transaction::TransactionGasEstimate::from_block_gas_prices(gas_prices, tip)?;
-
-    let gas_token = request.parameters.gas_token();
-    let token = ctx.execution.price.fetch_token(gas_token).await?;
-
-    let estimated_fee_in_strk = Felt::from(estimate.overall_fee);
-    let estimated_fee_in_gas_token = paymaster_prices::math::convert_strk_to_token(&token, estimated_fee_in_strk, true)?;
-
-    // Add pool collect_fee cost (in STRK) to the total fee
-    let pool_fee = Felt::from(ctx.configuration.privacy_pool_fee_amount);
-    let total_fee_in_strk = estimated_fee_in_strk + pool_fee;
-
-    let suggested_max_fee_in_strk = ctx.execution.compute_max_fee_in_strk(total_fee_in_strk);
-    let suggested_max_fee_in_gas_token = paymaster_prices::math::convert_strk_to_token(&token, suggested_max_fee_in_strk, true)?;
-
     let parameters = request.parameters.clone();
+
+    let transaction = paymaster_execution::PrivateTransaction {
+        parameters: request.parameters.into(),
+        pool_fee_amount: ctx.configuration.privacy_pool_fee_amount,
+        gas_tank_address: ctx.configuration.gas_tank.address,
+    };
+
+    let estimated = transaction.estimate(&ctx.execution).await?;
 
     Ok(PrivateInvokeTransaction {
         parameters,
-        fee: FeeEstimate {
-            gas_token_price_in_strk: token.price_in_strk,
-            estimated_fee_in_strk: total_fee_in_strk,
-            estimated_fee_in_gas_token,
-            suggested_max_fee_in_strk,
-            suggested_max_fee_in_gas_token,
-        },
-        fee_action: FeeAction {
-            recipient: ctx.configuration.gas_tank.address,
-            token: gas_token,
-            amount: suggested_max_fee_in_gas_token,
-        },
+        fee: estimated.fee_estimate.into(),
+        fee_action: estimated.fee_action.into(),
     }
     .into())
 }

@@ -1,5 +1,5 @@
 use paymaster_prices::math::convert_strk_to_token;
-use paymaster_starknet::transaction::{Calls, ExecuteFromOutsideMessage, ExecuteFromOutsideParameters, PaymasterVersion, TokenTransfer};
+use paymaster_starknet::transaction::{Calls, ExecuteFromOutsideMessage, ExecuteFromOutsideParameters, PaymasterVersion, TokenTransfer, TransactionGasEstimate};
 use paymaster_starknet::{ChainID, ContractAddress};
 use starknet::core::types::{BroadcastedTransaction, Felt};
 use starknet::macros::felt;
@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::diagnostics::DiagnosticClient;
 use crate::execution::deploy::DeploymentParameters;
-use crate::execution::fee::FeeEstimate;
+use crate::execution::fee::{FeeAction, FeeEstimate};
 use crate::execution::ExecutionParameters;
 use crate::{Client, Error};
 
@@ -304,6 +304,63 @@ impl VersionedTransaction {
         calls.push(TokenTransfer::new(self.parameters.gas_token(), self.forwarder, self.fee_estimate.suggested_max_fee_in_gas_token).to_call());
 
         calls
+    }
+}
+
+/// Paymaster transaction for private invoke flows that uses block gas prices instead of simulation.
+#[derive(Debug)]
+pub struct PrivateTransaction {
+    pub parameters: ExecutionParameters,
+    pub pool_fee_amount: u128,
+    pub gas_tank_address: Felt,
+}
+
+/// Estimated private transaction with fee details and the fee action the user must approve.
+#[derive(Debug)]
+pub struct EstimatedPrivateTransaction {
+    pub parameters: ExecutionParameters,
+    pub fee_estimate: FeeEstimate,
+    pub fee_action: FeeAction,
+}
+
+impl PrivateTransaction {
+    /// Estimate the private transaction using block gas prices and the pool fee.
+    pub async fn estimate(self, client: &Client) -> Result<EstimatedPrivateTransaction, Error> {
+        if !self.parameters.time_bounds().is_valid() {
+            return Err(Error::InvalidTimeBound);
+        }
+
+        let tip = client.get_tip(self.parameters.tip()).await?;
+        let gas_prices = client.starknet.fetch_block_gas_price().await?;
+        let estimate = TransactionGasEstimate::from_block_gas_prices(gas_prices, tip)?;
+
+        let gas_token = self.parameters.gas_token();
+        let token = client.price.fetch_token(gas_token).await?;
+
+        let estimated_fee_in_strk = Felt::from(estimate.overall_fee);
+        let estimated_fee_in_gas_token = convert_strk_to_token(&token, estimated_fee_in_strk, true)?;
+
+        // Add pool collect_fee cost (in STRK) to the total fee
+        let total_fee_in_strk = estimated_fee_in_strk + Felt::from(self.pool_fee_amount);
+
+        let suggested_max_fee_in_strk = client.compute_max_fee_in_strk(total_fee_in_strk);
+        let suggested_max_fee_in_gas_token = convert_strk_to_token(&token, suggested_max_fee_in_strk, true)?;
+
+        Ok(EstimatedPrivateTransaction {
+            parameters: self.parameters,
+            fee_estimate: FeeEstimate {
+                gas_token_price_in_strk: token.price_in_strk,
+                estimated_fee_in_strk: total_fee_in_strk,
+                estimated_fee_in_gas_token,
+                suggested_max_fee_in_strk,
+                suggested_max_fee_in_gas_token,
+            },
+            fee_action: FeeAction {
+                recipient: self.gas_tank_address,
+                token: gas_token,
+                amount: suggested_max_fee_in_gas_token,
+            },
+        })
     }
 }
 
