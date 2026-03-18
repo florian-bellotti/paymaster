@@ -1,7 +1,7 @@
 use paymaster_prices::math::convert_strk_to_token;
 use paymaster_starknet::transaction::{Calls, ExecuteFromOutsideMessage, ExecuteFromOutsideParameters, PaymasterVersion, TokenTransfer, TransactionGasEstimate};
 use paymaster_starknet::{ChainID, ContractAddress};
-use starknet::core::types::{BroadcastedTransaction, Felt};
+use starknet::core::types::{BroadcastedTransaction, Felt, TypedData};
 use starknet::macros::felt;
 use uuid::Uuid;
 
@@ -307,12 +307,20 @@ impl VersionedTransaction {
     }
 }
 
+/// User calls to be included in a private transaction's execute_from_outside message.
+#[derive(Debug)]
+pub struct PrivateInvokeUserCalls {
+    pub user_address: Felt,
+    pub calls: Calls,
+}
+
 /// Paymaster transaction for private invoke flows that uses block gas prices instead of simulation.
 #[derive(Debug)]
 pub struct PrivateTransaction {
     pub forwarder: ContractAddress,
     pub parameters: ExecutionParameters,
     pub pool_fee_amount: u128,
+    pub user_calls: Option<PrivateInvokeUserCalls>,
 }
 
 /// Estimated private transaction with fee details and the fee action the user must approve.
@@ -321,6 +329,7 @@ pub struct EstimatedPrivateTransaction {
     pub parameters: ExecutionParameters,
     pub fee_estimate: FeeEstimate,
     pub fee_action: FeeAction,
+    pub typed_data: Option<TypedData>,
 }
 
 impl PrivateTransaction {
@@ -346,6 +355,26 @@ impl PrivateTransaction {
         let suggested_max_fee_in_strk = client.compute_max_fee_in_strk(total_fee_in_strk);
         let suggested_max_fee_in_gas_token = convert_strk_to_token(&token, suggested_max_fee_in_strk, true)?;
 
+        let typed_data = if let Some(user_calls) = self.user_calls {
+            let version = client
+                .starknet
+                .resolve_paymaster_version_from_account(user_calls.user_address)
+                .await?;
+            let message = ExecuteFromOutsideMessage::new(
+                version,
+                ExecuteFromOutsideParameters {
+                    chain_id: *client.starknet.chain_id(),
+                    caller: self.forwarder,
+                    nonce: Felt::from(Uuid::new_v4().to_u128_le()),
+                    calls: user_calls.calls,
+                    time_bounds: self.parameters.time_bounds(),
+                },
+            );
+            Some(message.to_typed_data()?)
+        } else {
+            None
+        };
+
         Ok(EstimatedPrivateTransaction {
             parameters: self.parameters,
             fee_estimate: FeeEstimate {
@@ -360,6 +389,7 @@ impl PrivateTransaction {
                 token: gas_token,
                 amount: suggested_max_fee_in_gas_token,
             },
+            typed_data,
         })
     }
 }

@@ -1,13 +1,16 @@
 mod build;
-pub use build::{EstimatedPrivateTransaction, EstimatedTransaction, InvokeParameters, PrivateTransaction, Transaction, TransactionParameters, VersionedTransaction};
+pub use build::{
+    EstimatedPrivateTransaction, EstimatedTransaction, InvokeParameters, PrivateInvokeUserCalls, PrivateTransaction, Transaction, TransactionParameters,
+    VersionedTransaction,
+};
 
 mod deploy;
 pub use deploy::DeploymentParameters;
 
 mod execute;
 pub use execute::{
-    EstimatedExecutableTransaction, ExecutableDirectInvokeParameters, ExecutableInvokeParameters, ExecutablePrivateInvokeParameters, ExecutableTransaction,
-    ExecutableTransactionParameters, ParsedExecuteFromOutside,
+    EstimatedExecutableTransaction, ExecutableApplyActionParameters, ExecutableDirectInvokeParameters, ExecutableInvokeParameters, ExecutableTransaction,
+    ExecutableTransactionParameters,
 };
 
 mod fee;

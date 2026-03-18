@@ -29,8 +29,12 @@ pub enum ExecutableTransactionParameters {
         deployment: DeploymentParameters,
         invoke: ExecutableInvokeParameters,
     },
-    PrivateInvoke {
-        private_invoke: ExecutablePrivateInvokeParameters,
+    ApplyAction {
+        apply_action: ExecutableApplyActionParameters,
+    },
+    InvokeAndApplyAction {
+        invoke: ExecuteFromOutsideData,
+        apply_action: ExecutableApplyActionParameters,
     },
 }
 
@@ -45,8 +49,12 @@ impl TryFrom<ExecutableTransactionParameters> for paymaster_execution::Executabl
                 deployment: deployment.into(),
                 invoke: invoke.try_into()?,
             },
-            ExecutableTransactionParameters::PrivateInvoke { private_invoke } => Self::PrivateInvoke {
-                private_invoke: private_invoke.try_into()?,
+            ExecutableTransactionParameters::ApplyAction { apply_action } => Self::ApplyAction {
+                apply_action: apply_action.into(),
+            },
+            ExecutableTransactionParameters::InvokeAndApplyAction { invoke, apply_action } => Self::InvokeAndApplyAction {
+                invoke: invoke.try_into()?,
+                apply_action: apply_action.into(),
             },
         })
     }
@@ -86,12 +94,17 @@ pub struct ExecuteFromOutsideData {
     pub signature: Signature,
 }
 
+impl TryFrom<ExecuteFromOutsideData> for paymaster_execution::ExecutableInvokeParameters {
+    type Error = Error;
+
+    fn try_from(value: ExecuteFromOutsideData) -> Result<Self, Self::Error> {
+        Ok(Self::new(value.user_address, value.typed_data, value.signature)?)
+    }
+}
+
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-pub struct ExecutablePrivateInvokeParameters {
-    #[serde(default)]
-    pub execute_from_outside: Option<ExecuteFromOutsideData>,
-
+pub struct ExecutableApplyActionParameters {
     pub apply_actions_call: Call,
 
     pub proof: String,
@@ -100,15 +113,9 @@ pub struct ExecutablePrivateInvokeParameters {
     pub proof_facts: Vec<Felt>,
 }
 
-impl TryFrom<ExecutablePrivateInvokeParameters> for paymaster_execution::ExecutablePrivateInvokeParameters {
-    type Error = Error;
-
-    fn try_from(value: ExecutablePrivateInvokeParameters) -> Result<Self, Self::Error> {
-        let efo = value
-            .execute_from_outside
-            .map(|d| (d.user_address, d.typed_data, d.signature));
-        let result = Self::new(efo, value.apply_actions_call, value.proof, value.proof_facts)?;
-        Ok(result)
+impl From<ExecutableApplyActionParameters> for paymaster_execution::ExecutableApplyActionParameters {
+    fn from(value: ExecutableApplyActionParameters) -> Self {
+        Self::new(value.apply_actions_call, value.proof, value.proof_facts)
     }
 }
 

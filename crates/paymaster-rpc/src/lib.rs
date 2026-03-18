@@ -17,11 +17,13 @@ pub use context::{Configuration, RPCConfiguration};
 mod endpoint;
 use crate::endpoint::execute_raw::{ExecuteDirectRequest, ExecuteDirectResponse};
 pub use endpoint::build::{
-    BuildTransactionRequest, BuildTransactionResponse, DeployAndInvokeTransaction, DeployTransaction, FeeAction, FeeEstimate, InvokeParameters, InvokeTransaction,
-    PrivateInvokeParameters, PrivateInvokeTransaction, TransactionParameters,
+    ApplyActionParameters, ApplyActionTransaction, BuildTransactionRequest, BuildTransactionResponse, DeployAndInvokeTransaction, DeployTransaction, FeeAction,
+    FeeEstimate, InvokeAndApplyActionTransaction, InvokeParameters, InvokeTransaction, TransactionParameters,
 };
 pub use endpoint::common::{DeploymentParameters, ExecutionParameters, FeeMode, TimeBounds};
-pub use endpoint::execute::{ExecutableInvokeParameters, ExecutablePrivateInvokeParameters, ExecutableTransactionParameters, ExecuteRequest, ExecuteResponse};
+pub use endpoint::execute::{
+    ExecutableApplyActionParameters, ExecutableInvokeParameters, ExecutableTransactionParameters, ExecuteFromOutsideData, ExecuteRequest, ExecuteResponse,
+};
 pub use endpoint::token::TokenPrice;
 
 mod middleware;

@@ -284,21 +284,46 @@
             }
           },
           {
-            "title": "Private Invoke",
+            "title": "Apply Action",
             "type": "object",
             "required": [
               "type",
-              "private_invoke"
+              "apply_action"
             ],
             "properties": {
               "type": {
                 "title": "Transaction type",
-                "const": ["private_invoke"]
+                "const": ["apply_action"]
               },
-              "private_invoke": {
-                "title": "Private invoke data",
+              "apply_action": {
+                "title": "Apply action data",
                 "description": "Privacy transaction data including the apply_actions call and ZK proof",
-                "$ref": "#/components/schemas/PAYMASTER_EXECUTABLE_PRIVATE_INVOKE"
+                "$ref": "#/components/schemas/PAYMASTER_EXECUTABLE_APPLY_ACTION"
+              }
+            }
+          },
+          {
+            "title": "Invoke and Apply Action",
+            "type": "object",
+            "required": [
+              "type",
+              "execute_from_outside",
+              "apply_action"
+            ],
+            "properties": {
+              "type": {
+                "title": "Transaction type",
+                "const": ["invoke_and_apply_action"]
+              },
+              "execute_from_outside": {
+                "title": "Execute from outside data",
+                "description": "Signed user calls (e.g. approve) to be executed before the privacy action",
+                "$ref": "#/components/schemas/PAYMASTER_EXECUTABLE_INVOKE"
+              },
+              "apply_action": {
+                "title": "Apply action data",
+                "description": "Privacy transaction data including the apply_actions call and ZK proof",
+                "$ref": "#/components/schemas/PAYMASTER_EXECUTABLE_APPLY_ACTION"
               }
             }
           }
@@ -329,7 +354,7 @@
           }
         }
       },
-      "PAYMASTER_EXECUTABLE_PRIVATE_INVOKE": {
+      "PAYMASTER_EXECUTABLE_APPLY_ACTION": {
         "type": "object",
         "required": [
           "apply_actions_call",
@@ -337,33 +362,6 @@
           "proof_facts"
         ],
         "properties": {
-          "execute_from_outside": {
-            "title": "Execute from outside data",
-            "description": "Optional grouped data for an execute_from_outside call: user address, typed data wrapping user calls, and signature",
-            "type": "object",
-            "required": [
-              "user_address",
-              "typed_data",
-              "signature"
-            ],
-            "properties": {
-              "user_address": {
-                "title": "User Account",
-                "description": "The address of the user account",
-                "$ref": "#/components/schemas/ADDRESS"
-              },
-              "typed_data": {
-                "title": "Typed data",
-                "description": "Typed data wrapping user calls (e.g. approve) to be executed before the privacy action",
-                "$ref": "#/components/schemas/OUTSIDE_EXECUTION_TYPED_DATA"
-              },
-              "signature": {
-                "title": "Signature",
-                "description": "Signature of the associated typed data",
-                "$ref": "#/components/schemas/SIGNATURE"
-              }
-            }
-          },
           "apply_actions_call": {
             "title": "Apply actions call",
             "description": "The full Call targeting a whitelisted privacy pool contract with selector apply_actions",
@@ -450,21 +448,46 @@
             }
           },
           {
-            "title": "Private Invoke",
+            "title": "Apply Action",
             "type": "object",
             "required": [
               "type",
-              "private_invoke"
+              "apply_action"
             ],
             "properties": {
               "type": {
                 "title": "Transaction type",
-                "const": ["private_invoke"]
+                "const": ["apply_action"]
               },
-              "private_invoke": {
-                "title": "Private invoke data",
-                "description": "Parameters for building a gasless private transaction",
-                "$ref": "#/components/schemas/PAYMASTER_PRIVATE_INVOKE"
+              "apply_action": {
+                "title": "Apply action data",
+                "description": "Parameters for a private transaction without user calls (e.g. withdraw)",
+                "$ref": "#/components/schemas/PAYMASTER_APPLY_ACTION"
+              }
+            }
+          },
+          {
+            "title": "Invoke and Apply Action",
+            "type": "object",
+            "required": [
+              "type",
+              "invoke",
+              "apply_action"
+            ],
+            "properties": {
+              "type": {
+                "title": "Transaction type",
+                "const": ["invoke_and_apply_action"]
+              },
+              "invoke": {
+                "title": "Invoke data",
+                "description": "User calls to include in the transaction (e.g. approve for deposits)",
+                "$ref": "#/components/schemas/PAYMASTER_INVOKE"
+              },
+              "apply_action": {
+                "title": "Apply action data",
+                "description": "Parameters for the private transaction",
+                "$ref": "#/components/schemas/PAYMASTER_APPLY_ACTION"
               }
             }
           }
@@ -492,9 +515,9 @@
           }
         }
       },
-      "PAYMASTER_PRIVATE_INVOKE": {
-        "title": "Private Invoke Parameters",
-        "description": "Parameters for a gasless private transaction: privacy pool and optional user calls",
+      "PAYMASTER_APPLY_ACTION": {
+        "title": "Apply Action Parameters",
+        "description": "Parameters for a private transaction targeting a privacy pool",
         "type": "object",
         "required": [
           "pool_address"
@@ -504,30 +527,6 @@
             "title": "Pool Address",
             "description": "The address of the privacy pool contract",
             "$ref": "#/components/schemas/FELT"
-          },
-          "user_calls": {
-            "title": "User Calls",
-            "description": "Optional grouped user calls parameters: user address and calls to include in the transaction (e.g. approve for deposits)",
-            "type": "object",
-            "required": [
-              "user_address",
-              "calls"
-            ],
-            "properties": {
-              "user_address": {
-                "title": "User Account",
-                "description": "The address of the user account",
-                "$ref": "#/components/schemas/FELT"
-              },
-              "calls": {
-                "title": "Calls",
-                "description": "User calls to include in the transaction (e.g. approve for deposits)",
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/CALL"
-                }
-              }
-            }
           }
         }
       },
@@ -631,7 +630,7 @@
       },
       "PAYMASTER_BUILD_RESPONSE": {
         "title": "Build response",
-        "description": "The result of building a transaction. For standard transactions, returns typed data to sign and fee estimate. For private invoke, returns execution parameters, fee estimate, and fee action",
+        "description": "The result of building a transaction. For standard transactions, returns typed data to sign and fee estimate. For apply_action, returns fee estimate and fee action. For invoke_and_apply_action, also returns typed data to sign.",
         "oneOf": [
           {
             "title": "Standard build response",
@@ -656,7 +655,7 @@
             }
           },
           {
-            "title": "Private invoke build response",
+            "title": "Apply action build response",
             "type": "object",
             "required": [
               "type",
@@ -667,7 +666,43 @@
             "properties": {
               "type": {
                 "title": "Transaction type",
-                "const": ["private_invoke"]
+                "const": "apply_action"
+              },
+              "parameters": {
+                "title": "Execution parameters",
+                "description": "The execution parameters to pass back when calling paymaster_execute",
+                "$ref": "#/components/schemas/PAYMASTER_EXECUTION"
+              },
+              "fee": {
+                "title": "Fee estimate",
+                "$ref": "#/components/schemas/PAYMASTER_FEE_ESTIMATE"
+              },
+              "fee_action": {
+                "title": "Fee action",
+                "description": "The fee payment action that the user must include as a Withdraw in the privacy SDK proof",
+                "$ref": "#/components/schemas/FEE_ACTION"
+              }
+            }
+          },
+          {
+            "title": "Invoke and apply action build response",
+            "type": "object",
+            "required": [
+              "type",
+              "typed_data",
+              "parameters",
+              "fee",
+              "fee_action"
+            ],
+            "properties": {
+              "type": {
+                "title": "Transaction type",
+                "const": "invoke_and_apply_action"
+              },
+              "typed_data": {
+                "title": "Typed data",
+                "description": "Typed data wrapping user calls (e.g. approve) to be signed by the user",
+                "$ref": "#/components/schemas/OUTSIDE_EXECUTION_TYPED_DATA"
               },
               "parameters": {
                 "title": "Execution parameters",

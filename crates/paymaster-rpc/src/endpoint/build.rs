@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use jsonrpsee::core::Serialize;
-use paymaster_execution::{PrivateTransaction, Transaction};
+use paymaster_execution::{PrivateInvokeUserCalls, PrivateTransaction, Transaction};
 use paymaster_starknet::transaction::Calls;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -23,10 +23,23 @@ pub struct BuildTransactionRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransactionParameters {
-    Deploy { deployment: DeploymentParameters },
-    Invoke { invoke: InvokeParameters },
-    DeployAndInvoke { deployment: DeploymentParameters, invoke: InvokeParameters },
-    PrivateInvoke { private_invoke: PrivateInvokeParameters },
+    Deploy {
+        deployment: DeploymentParameters,
+    },
+    Invoke {
+        invoke: InvokeParameters,
+    },
+    DeployAndInvoke {
+        deployment: DeploymentParameters,
+        invoke: InvokeParameters,
+    },
+    ApplyAction {
+        apply_action: ApplyActionParameters,
+    },
+    InvokeAndApplyAction {
+        invoke: InvokeParameters,
+        apply_action: ApplyActionParameters,
+    },
 }
 
 impl TryFrom<TransactionParameters> for paymaster_execution::TransactionParameters {
@@ -40,9 +53,9 @@ impl TryFrom<TransactionParameters> for paymaster_execution::TransactionParamete
                 deployment: deployment.into(),
                 invoke: invoke.into(),
             },
-            TransactionParameters::PrivateInvoke { .. } => {
+            TransactionParameters::ApplyAction { .. } | TransactionParameters::InvokeAndApplyAction { .. } => {
                 return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
-                    "PrivateInvoke cannot be converted to standard transaction parameters".to_string(),
+                    "ApplyAction cannot be converted to standard transaction parameters".to_string(),
                 )));
             },
         })
@@ -55,7 +68,8 @@ impl TransactionParameters {
             Self::Deploy { .. } => &[],
             Self::Invoke { invoke } => &invoke.calls,
             Self::DeployAndInvoke { invoke, .. } => &invoke.calls,
-            Self::PrivateInvoke { private_invoke } => private_invoke.user_calls.as_ref().map(|uc| uc.calls.as_slice()).unwrap_or(&[]),
+            Self::ApplyAction { .. } => &[],
+            Self::InvokeAndApplyAction { invoke, .. } => &invoke.calls,
         }
     }
 }
@@ -68,19 +82,9 @@ pub struct InvokeParameters {
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct UserCallsParameters {
-    #[serde_as(as = "UfeHex")]
-    pub user_address: Felt,
-    pub calls: Vec<Call>,
-}
-
-#[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PrivateInvokeParameters {
+pub struct ApplyActionParameters {
     #[serde_as(as = "UfeHex")]
     pub pool_address: Felt,
-    #[serde(default)]
-    pub user_calls: Option<UserCallsParameters>,
 }
 
 impl From<InvokeParameters> for paymaster_execution::InvokeParameters {
@@ -98,7 +102,8 @@ pub enum BuildTransactionResponse {
     Deploy(DeployTransaction),
     Invoke(InvokeTransaction),
     DeployAndInvoke(DeployAndInvokeTransaction),
-    PrivateInvoke(PrivateInvokeTransaction),
+    ApplyAction(ApplyActionTransaction),
+    InvokeAndApplyAction(InvokeAndApplyActionTransaction),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -143,15 +148,30 @@ impl From<DeployAndInvokeTransaction> for BuildTransactionResponse {
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone)]
-pub struct PrivateInvokeTransaction {
+pub struct ApplyActionTransaction {
     pub parameters: ExecutionParameters,
     pub fee: FeeEstimate,
     pub fee_action: FeeAction,
 }
 
-impl From<PrivateInvokeTransaction> for BuildTransactionResponse {
-    fn from(value: PrivateInvokeTransaction) -> Self {
-        Self::PrivateInvoke(value)
+impl From<ApplyActionTransaction> for BuildTransactionResponse {
+    fn from(value: ApplyActionTransaction) -> Self {
+        Self::ApplyAction(value)
+    }
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InvokeAndApplyActionTransaction {
+    pub typed_data: TypedData,
+    pub parameters: ExecutionParameters,
+    pub fee: FeeEstimate,
+    pub fee_action: FeeAction,
+}
+
+impl From<InvokeAndApplyActionTransaction> for BuildTransactionResponse {
+    fn from(value: InvokeAndApplyActionTransaction) -> Self {
+        Self::InvokeAndApplyAction(value)
     }
 }
 
@@ -210,23 +230,24 @@ pub async fn build_transaction_endpoint(ctx: &RequestContext<'_>, request: Build
 
     match &request.transaction {
         TransactionParameters::Deploy { .. } if request.parameters.fee_mode().is_sponsored() => build_deploy_sponsored(ctx, request).await,
-        TransactionParameters::PrivateInvoke { .. } => build_private_invoke(ctx, request).await,
+        TransactionParameters::ApplyAction { .. } | TransactionParameters::InvokeAndApplyAction { .. } => build_apply_action(ctx, request).await,
         _ => build_transaction(ctx, request).await,
     }
 }
 
-async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
-    let private_invoke = match &request.transaction {
-        TransactionParameters::PrivateInvoke { private_invoke } => private_invoke.clone(),
+async fn build_apply_action(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
+    let (pool_address, invoke) = match &request.transaction {
+        TransactionParameters::ApplyAction { apply_action } => (apply_action.pool_address, None),
+        TransactionParameters::InvokeAndApplyAction { invoke, apply_action } => (apply_action.pool_address, Some(invoke.clone())),
         _ => {
             return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
-                "Expected PrivateInvoke transaction".to_string(),
+                "Expected ApplyAction or InvokeAndApplyAction transaction".to_string(),
             )));
         },
     };
 
     // Validate pool is whitelisted
-    if ctx.configuration.privacy_pool != private_invoke.pool_address {
+    if ctx.configuration.privacy_pool != pool_address {
         return Err(Error::Execution(starknet::core::types::ContractExecutionError::Message(
             "privacy pool address is not whitelisted".to_string(),
         )));
@@ -234,20 +255,35 @@ async fn build_private_invoke(ctx: &Context, request: BuildTransactionRequest) -
 
     let parameters = request.parameters.clone();
 
+    let user_calls = invoke.map(|inv| PrivateInvokeUserCalls {
+        user_address: inv.user_address,
+        calls: Calls::new(inv.calls),
+    });
+
     let transaction = PrivateTransaction {
         forwarder: ctx.configuration.forwarder,
         parameters: request.parameters.into(),
         pool_fee_amount: ctx.configuration.privacy_pool_fee_amount,
+        user_calls,
     };
 
     let estimated = transaction.estimate(&ctx.execution).await?;
 
-    Ok(PrivateInvokeTransaction {
-        parameters,
-        fee: estimated.fee_estimate.into(),
-        fee_action: estimated.fee_action.into(),
+    match estimated.typed_data {
+        Some(typed_data) => Ok(InvokeAndApplyActionTransaction {
+            typed_data,
+            parameters,
+            fee: estimated.fee_estimate.into(),
+            fee_action: estimated.fee_action.into(),
+        }
+        .into()),
+        None => Ok(ApplyActionTransaction {
+            parameters,
+            fee: estimated.fee_estimate.into(),
+            fee_action: estimated.fee_action.into(),
+        }
+        .into()),
     }
-    .into())
 }
 
 async fn build_deploy_sponsored(ctx: &Context, request: BuildTransactionRequest) -> Result<BuildTransactionResponse, Error> {
